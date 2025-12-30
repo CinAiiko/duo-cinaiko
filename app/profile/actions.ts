@@ -1,6 +1,5 @@
 "use server";
 
-import { createClient } from "@/utils/supabase/client";
 import { createServerClient } from "@supabase/ssr"; // Correction import standard
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
