@@ -2,15 +2,27 @@
 
 import { useState, useEffect, useRef } from "react";
 import { getSession, saveResult } from "./actions";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { speak } from "@/app/utils/tts";
 
 export default function LearnPage() {
   const { lang } = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
 
-  // --- ÉTATS ---
+  // On récupère le mode
+  const modeParam = searchParams.get("mode");
+  // On normalise le mode pour TypeScript
+  const mode =
+    modeParam === "bonus" || modeParam === "review-all"
+      ? modeParam
+      : "standard";
+
+  // Est-ce un mode "Sans impact" ?
+  const isFreeMode = mode === "review-all";
+
+  // États
   const [cards, setCards] = useState<any[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -22,18 +34,18 @@ export default function LearnPage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const nextButtonRef = useRef<HTMLButtonElement>(null);
 
-  // --- CHARGEMENT ---
+  // Chargement
   useEffect(() => {
     const loadData = async () => {
       // @ts-ignore
-      const data = await getSession(lang as string);
+      const data = await getSession(lang as string, mode);
       setCards(data);
       setIsLoading(false);
     };
     loadData();
-  }, [lang]);
+  }, [lang, mode]);
 
-  // --- FOCUS ---
+  // Focus
   useEffect(() => {
     if (!isLoading) {
       if (status === "idle") {
@@ -56,8 +68,13 @@ export default function LearnPage() {
       <div className="min-h-screen flex flex-col items-center justify-center p-8 bg-slate-50 text-center">
         <div className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full border border-slate-100">
           <h2 className="text-2xl font-bold text-slate-800 mb-4">
-            Tout est à jour ! 🎉
+            {isFreeMode ? "Entraînement terminé ! 💪" : "Session terminée ! 🎉"}
           </h2>
+          <p className="text-slate-500 mb-6">
+            {isFreeMode
+              ? "Bravo, belle révision."
+              : "Tu es à jour. Reviens demain."}
+          </p>
           <Link
             href={`/${lang}`}
             className="block w-full bg-indigo-600 text-white font-bold px-6 py-3 rounded-xl hover:bg-indigo-700 transition-colors"
@@ -71,45 +88,54 @@ export default function LearnPage() {
 
   const currentCard = cards[currentIndex];
 
-  // --- 1. VALIDATION CLASSIQUE ---
+  // --- TRAITEMENT DU RÉSULTAT ---
+  const processResult = async (isCorrect: boolean) => {
+    if (isCorrect) setStatus("success");
+    else setStatus("error");
+
+    // SI ON EST EN MODE LIBRE (REVIEW-ALL) : ON NE SAUVEGARDE RIEN EN DB !
+    // On s'arrête ici pour la partie "Backend".
+    if (isFreeMode) return;
+
+    // SINON (Mode Standard/Bonus) : On sauvegarde
+    let result = { success: true, error: "" };
+
+    if (!currentCard.isRetry) {
+      // @ts-ignore
+      result = await saveResult(
+        currentCard.review_id,
+        currentCard.id,
+        isCorrect,
+        currentCard.interval
+      );
+    } else if (currentCard.isRetry && isCorrect) {
+      // @ts-ignore
+      result = await saveResult(currentCard.review_id, currentCard.id, true, 0);
+    }
+
+    if (result && !result.success) {
+      console.error("Erreur de sauvegarde :", result.error);
+      alert("Erreur de sauvegarde : " + result.error);
+    }
+  };
+
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (status !== "idle") return;
-
     const isCorrect =
       input.trim().toLowerCase() ===
       currentCard.answer_target.trim().toLowerCase();
     processResult(isCorrect);
   };
 
-  // --- 2. JE NE SAIS PAS (ABANDON) ---
   const handleGiveUp = () => {
     if (status !== "idle") return;
-    setInput(""); // On vide le champ pour montrer qu'on ne savait pas
-    processResult(false); // On force l'erreur
+    setInput("");
+    processResult(false);
   };
 
-  // --- LOGIQUE COMMUNE (TRAITEMENT DU RÉSULTAT) ---
-  const processResult = async (isCorrect: boolean) => {
-    if (isCorrect) {
-      setStatus("success");
-    } else {
-      setStatus("error");
-    }
-
-    if (!currentCard.isRetry) {
-      await saveResult(
-        currentCard.review_id,
-        currentCard.id,
-        isCorrect,
-        currentCard.interval
-      );
-    }
-  };
-
-  // --- SUIVANT ---
   const handleNext = () => {
-    // Si erreur, on remet à la fin
+    // Mastery Learning : Même en mode libre, si c'est faux, on le refait à la fin !
     if (status === "error") {
       setCards((prev) => [...prev, { ...currentCard, isRetry: true }]);
     }
@@ -119,18 +145,15 @@ export default function LearnPage() {
       setInput("");
       setStatus("idle");
     } else {
-      alert("Session terminée ! Bravo.");
       router.push(`/${lang}`);
     }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Raccourci : Ctrl + Enter pour "Je ne sais pas" (optionnel mais pratique)
     if (status === "idle" && e.key === "Enter" && e.ctrlKey) {
       handleGiveUp();
       return;
     }
-
     if (status !== "idle" && e.key === " ") {
       e.preventDefault();
       handleNext();
@@ -144,7 +167,13 @@ export default function LearnPage() {
         <span>
           Carte {currentIndex + 1} / {cards.length}
         </span>
-        {currentCard.isRetry ? (
+
+        {/* Badge Spécial Mode Libre */}
+        {isFreeMode ? (
+          <span className="px-2 py-1 rounded-md bg-purple-100 text-purple-600 border border-purple-200">
+            Mode Entraînement (Sans impact)
+          </span>
+        ) : currentCard.isRetry ? (
           <span className="px-2 py-1 rounded-md bg-red-100 text-red-600 animate-pulse">
             Répétition
           </span>
@@ -161,44 +190,45 @@ export default function LearnPage() {
         )}
       </div>
 
-      {/* --- CARTE --- */}
+      {/* CARTE */}
       <div
         className={`
         w-full max-w-xl bg-white rounded-3xl shadow-xl overflow-hidden transition-all duration-300 border-2 relative
-        ${status === "idle" ? "border-transparent" : ""}
+        ${
+          status === "idle"
+            ? isFreeMode
+              ? "border-purple-200"
+              : "border-transparent"
+            : ""
+        }
         ${status === "error" ? "border-red-100 ring-4 ring-red-50" : ""}
         ${status === "success" ? "border-green-100 ring-4 ring-green-50" : ""}
       `}
       >
-        {/* EN-TÊTE */}
+        {/* HAUT */}
         <div className="bg-slate-50 p-6 text-center border-b border-slate-100">
           <h1 className="text-3xl md:text-4xl font-extrabold text-slate-800 mb-3 tracking-tight">
             {currentCard.hint || "..."}
           </h1>
           <div className="flex flex-wrap gap-2 justify-center min-h-[24px]">
             {currentCard.part_of_speech && (
-              <span className="px-3 py-1 rounded-md bg-blue-100 text-blue-700 text-xs font-bold uppercase tracking-wider">
+              <span className="px-3 py-1 rounded-md bg-blue-100 text-blue-700 text-xs font-bold uppercase">
                 {currentCard.part_of_speech}
               </span>
             )}
             {currentCard.grammar_notes && (
-              <span className="px-3 py-1 rounded-md bg-purple-100 text-purple-700 text-xs font-bold uppercase tracking-wider">
+              <span className="px-3 py-1 rounded-md bg-purple-100 text-purple-700 text-xs font-bold uppercase">
                 {currentCard.grammar_notes}
               </span>
             )}
           </div>
         </div>
 
-        {/* CORPS DE LA CARTE */}
+        {/* CONTENU */}
         <div className="p-8 bg-white relative">
-          {/* BOUTON AUDIO PHRASE COMPLÈTE (Anti-triche) */}
           <div className="absolute top-4 right-4">
             {status === "idle" ? (
-              // Cadenas si pas répondu
-              <span
-                className="text-slate-200"
-                title="Réponds d'abord pour écouter"
-              >
+              <span className="text-slate-200 cursor-not-allowed">
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   viewBox="0 0 24 24"
@@ -213,11 +243,9 @@ export default function LearnPage() {
                 </svg>
               </span>
             ) : (
-              // Haut-parleur si répondu
               <button
                 onClick={() => speak(currentCard.content_raw, lang as string)}
-                className="p-2 text-indigo-500 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-full transition-colors"
-                title="Écouter la phrase complète"
+                className="p-2 text-indigo-500 bg-indigo-50 rounded-full hover:bg-indigo-100"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
@@ -264,30 +292,25 @@ export default function LearnPage() {
               ))}
           </p>
 
-          {/* ZONE DE FEEDBACK */}
           {status !== "idle" && (
             <div className="mt-8 flex flex-col items-center animate-bounce-short">
-              {/* LA RÉPONSE CORRECTE */}
               <div
                 className={`text-center ${
                   status === "error" ? "text-red-600" : "text-green-600"
                 }`}
               >
                 <p className="text-xs font-bold uppercase tracking-widest mb-1">
-                  {status === "error" ? "La bonne réponse :" : "Bien joué !"}
+                  {status === "error" ? "La bonne réponse :" : "Excellent !"}
                 </p>
                 <div className="flex items-center gap-3 justify-center">
                   <span className="text-3xl font-extrabold">
                     {currentCard.answer_target}
                   </span>
-
-                  {/* NOUVEAU : Bouton audio "Juste le mot" */}
                   <button
                     onClick={() =>
                       speak(currentCard.answer_target, lang as string)
                     }
-                    className="p-2 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors"
-                    title="Écouter seulement ce mot"
+                    className="p-2 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600"
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
@@ -300,17 +323,16 @@ export default function LearnPage() {
                   </button>
                 </div>
               </div>
-
               {status === "error" && (
                 <p className="text-xs text-slate-400 mt-4 italic">
-                  Cette carte sera reposée à la fin.
+                  Carte replacée à la fin.
                 </p>
               )}
             </div>
           )}
         </div>
 
-        {/* PIED DE PAGE : ACTIONS */}
+        {/* BAS */}
         <div className="p-4 bg-slate-50 border-t border-slate-100">
           {status === "idle" ? (
             <form onSubmit={handleSubmit} className="space-y-3">
@@ -323,18 +345,19 @@ export default function LearnPage() {
                 className="w-full bg-white border border-slate-300 rounded-xl p-3 text-center text-lg outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all font-medium text-slate-800 placeholder:text-slate-300"
                 placeholder="Tape la traduction..."
                 autoComplete="off"
+                autoCapitalize="none"
               />
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={handleGiveUp}
-                  className="w-1/3 py-3 rounded-xl font-bold text-sm text-slate-500 bg-slate-200 hover:bg-slate-300 hover:text-slate-700 transition-colors"
+                  className="w-1/3 py-3 rounded-xl font-bold text-sm text-slate-500 bg-slate-200 hover:bg-slate-300"
                 >
                   Je ne sais pas
                 </button>
                 <button
                   type="submit"
-                  className="w-2/3 py-3 rounded-xl font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-md transition-colors"
+                  className="w-2/3 py-3 rounded-xl font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-md"
                 >
                   Valider
                 </button>
@@ -345,13 +368,11 @@ export default function LearnPage() {
               ref={nextButtonRef}
               onClick={handleNext}
               onKeyDown={handleKeyDown}
-              className={`w-full py-4 rounded-xl font-bold text-lg text-white shadow-md transition-all active:scale-95
-                ${
-                  status === "success"
-                    ? "bg-green-600 hover:bg-green-700"
-                    : "bg-slate-800 hover:bg-slate-900"
-                }
-              `}
+              className={`w-full py-4 rounded-xl font-bold text-lg text-white shadow-md transition-all active:scale-95 ${
+                status === "success"
+                  ? "bg-green-600 hover:bg-green-700"
+                  : "bg-slate-800 hover:bg-slate-900"
+              }`}
             >
               Continuer (Espace) →
             </button>
@@ -364,7 +385,7 @@ export default function LearnPage() {
           href={`/${lang}`}
           className="text-slate-400 hover:text-slate-600 text-xs font-bold uppercase tracking-widest transition-colors"
         >
-          Quitter la session
+          Quitter
         </Link>
       </div>
     </div>

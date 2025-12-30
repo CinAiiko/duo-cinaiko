@@ -3,7 +3,6 @@ import { redirect } from "next/navigation";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
-// Type pour les props de la page (Next.js 15/16)
 type Props = {
   params: Promise<{ lang: string }>;
 };
@@ -11,13 +10,9 @@ type Props = {
 export default async function LanguageDashboard({ params }: Props) {
   const { lang } = await params;
 
-  // Sécurité Langue
   const VALID_LANGS = ["en", "es", "de"];
-  if (!VALID_LANGS.includes(lang)) {
-    redirect("/");
-  }
+  if (!VALID_LANGS.includes(lang)) redirect("/");
 
-  // 1. Connexion Supabase
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -32,58 +27,88 @@ export default async function LanguageDashboard({ params }: Props) {
     }
   );
 
-  // 2. Récupérer l'utilisateur
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) redirect("/login"); // Si pas connecté, oust !
+  if (!user) redirect("/login");
 
-  // 3. --- CALCULS STATISTIQUES ---
+  // --- 1. RÉCUPÉRATION DES DONNÉES ---
 
-  // A. Compter le TOTAL de phrases disponibles dans cette langue
-  const { count: totalSentences } = await supabase
-    .from("sentences")
-    .select("*", { count: "exact", head: true })
-    .eq("language_code", lang);
-
-  // B. Récupérer TOUTES les reviews de l'utilisateur pour cette langue
-  // (On doit faire une jointure pour filtrer par langue, mais Supabase le gère mieux en 2 temps pour l'instant)
-  // On récupère les IDs des phrases de cette langue d'abord
+  // A. On récupère TOUTES les phrases de la langue actuelle
   const { data: sentences } = await supabase
     .from("sentences")
     .select("id")
     .eq("language_code", lang);
 
   const sentenceIds = sentences?.map((s) => s.id) || [];
+  const totalSentencesCount = sentenceIds.length;
 
-  // Maintenant on cherche les reviews correspondant à ces phrases
-  let dueCount = 0;
+  // B. On récupère les Reviews liées à ces phrases
   let learnedCount = 0;
+  let dueCount = 0;
+  let learnedTodayCount = 0;
 
   if (sentenceIds.length > 0) {
+    const now = new Date().toISOString();
+    const todayMidnight = new Date();
+    todayMidnight.setHours(0, 0, 0, 0); // Minuit pile ce matin
+
+    // On sélectionne created_at ET last_reviewed_at pour être sûr d'avoir une date valide
     const { data: reviews } = await supabase
       .from("reviews")
-      .select("next_review_date")
+      .select("next_review_date, created_at, last_reviewed_at")
       .eq("user_id", user.id)
       .in("sentence_id", sentenceIds);
 
     if (reviews) {
+      // Total appris (toutes dates confondues)
       learnedCount = reviews.length;
-      // Une carte est "Due" si sa date est passée (< maintenant)
-      const now = new Date().toISOString();
+
+      // À réviser (Date de révision dépassée)
       dueCount = reviews.filter((r) => r.next_review_date <= now).length;
+
+      // Appris AUJOURD'HUI
+      // LOGIQUE ROBUSTE : Si created_at est vide, on utilise last_reviewed_at
+      learnedTodayCount = reviews.filter((r) => {
+        const dateString = r.created_at || r.last_reviewed_at;
+        if (!dateString) return false;
+        return new Date(dateString) >= todayMidnight;
+      }).length;
     }
   }
 
-  // C. Calcul des Nouveaux (Total - Ceux déjà appris)
-  // On plafonne à 0 pour éviter les bugs si synchro en cours
-  const newCount = Math.max(0, (totalSentences || 0) - learnedCount);
+  // --- 2. CALCULS DE SESSION ---
 
-  // D. Calcul Total Session (Ce qu'il y a à faire aujourd'hui)
-  // On limite arbitrairement les "Nouveaux" à 10 par jour pour ne pas te noyer
-  const NEW_CARDS_PER_DAY = 10;
-  const todayNewCards = Math.min(newCount, NEW_CARDS_PER_DAY);
-  const totalSession = dueCount + todayNewCards;
+  const DAILY_GOAL = 10;
+
+  // Combien il reste de phrases dans la DB que je n'ai JAMAIS vues ?
+  const trueUnlearnedRemaining = Math.max(
+    0,
+    totalSentencesCount - learnedCount
+  );
+
+  // Combien il me reste à faire pour atteindre mon objectif de 10/jour ?
+  const dailyQuotaRemaining = Math.max(0, DAILY_GOAL - learnedTodayCount);
+
+  // LE NOMBRE RÉEL DE NOUVELLES CARTES À CHARGER
+  // (Le plus petit entre "Quota restant" et "Ce qui existe en base")
+  const newCardsToLearn = Math.min(dailyQuotaRemaining, trueUnlearnedRemaining);
+
+  // Taille de la session (Révisions + Nouveaux)
+  const standardSessionCount = dueCount + newCardsToLearn;
+
+  // Logique d'affichage des boutons
+  const canStartStandard = standardSessionCount > 0;
+
+  // Bonus : Uniquement si objectif atteint ET qu'il reste du contenu en base
+  const canStartBonus =
+    dailyQuotaRemaining === 0 && dueCount === 0 && trueUnlearnedRemaining > 0;
+
+  // Si on a tout fini (plus rien en base et tout révisé)
+  const isAllFinished = trueUnlearnedRemaining === 0 && dueCount === 0;
+
+  // Révision Libre : Possible si on a appris au moins 1 mot
+  const canStartFreeReview = learnedCount > 0;
 
   return (
     <div className="min-h-screen bg-slate-50 p-6 font-sans">
@@ -115,66 +140,110 @@ export default async function LanguageDashboard({ params }: Props) {
           </div>
         </header>
 
-        {/* Bloc État du jour */}
-        <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-200 text-center space-y-8">
+        {/* Bloc Principal */}
+        <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-200 text-center space-y-6">
           <div className="space-y-2">
             <h2 className="text-xl font-semibold text-slate-900">
-              Ta session du jour
+              Objectif du jour
             </h2>
-            <p className="text-slate-500 text-sm">
-              {totalSession > 0
-                ? "Le cerveau est un muscle, entraîne-le."
-                : "Tout est propre ! Repose tes neurones."}
-            </p>
+
+            {/* Barre de progression */}
+            <div className="relative pt-1">
+              <div className="flex mb-2 items-center justify-between">
+                <span className="text-xs font-semibold inline-block py-1 px-2 uppercase rounded-full text-indigo-600 bg-indigo-200">
+                  {learnedTodayCount} / {DAILY_GOAL}
+                </span>
+                <span className="text-xs font-bold text-slate-400">
+                  Total Base : {totalSentencesCount}
+                </span>
+              </div>
+              <div className="overflow-hidden h-2 mb-4 text-xs flex rounded bg-indigo-100">
+                <div
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      (learnedTodayCount / DAILY_GOAL) * 100
+                    )}%`,
+                  }}
+                  className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-indigo-500 transition-all duration-500"
+                ></div>
+              </div>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
-            {/* Carte À RÉVISER */}
+            {/* À REVOIR */}
             <div className="p-5 bg-orange-50 rounded-2xl border border-orange-100 flex flex-col items-center">
-              <span className="text-4xl font-bold text-orange-600 mb-1">
+              <span className="text-3xl font-bold text-orange-600 mb-1">
                 {dueCount}
               </span>
-              <span className="text-xs text-orange-800 font-bold uppercase tracking-widest">
-                À Réviser
+              <span className="text-[10px] text-orange-800 font-bold uppercase tracking-widest">
+                À Revoir
               </span>
             </div>
 
-            {/* Carte NOUVEAUX */}
+            {/* NOUVEAUX */}
             <div className="p-5 bg-blue-50 rounded-2xl border border-blue-100 flex flex-col items-center">
-              <span className="text-4xl font-bold text-blue-600 mb-1">
-                {todayNewCards}
+              <span className="text-3xl font-bold text-blue-600 mb-1">
+                {newCardsToLearn}
               </span>
-              <span className="text-xs text-blue-800 font-bold uppercase tracking-widest">
+              <span className="text-[10px] text-blue-800 font-bold uppercase tracking-widest">
                 Nouveaux
               </span>
             </div>
           </div>
 
-          {/* Bouton d'action intelligent */}
-          {totalSession > 0 ? (
-            <Link
-              href={`/${lang}/learn`}
-              className="block w-full py-5 bg-indigo-600 text-white font-bold text-lg rounded-2xl shadow-xl shadow-indigo-200 hover:bg-indigo-700 hover:-translate-y-1 transition-all"
-            >
-              Lancer la session ({totalSession})
-            </Link>
-          ) : (
-            <button
-              disabled
-              className="block w-full py-5 bg-slate-100 text-slate-400 font-bold text-lg rounded-2xl cursor-not-allowed border border-slate-200"
-            >
-              Session terminée ✅
-            </button>
-          )}
+          {/* ACTIONS */}
+          <div className="space-y-3">
+            {/* BOUTON STANDARD */}
+            {canStartStandard ? (
+              <Link
+                href={`/${lang}/learn`}
+                className="block w-full py-4 bg-indigo-600 text-white font-bold text-lg rounded-2xl shadow-lg shadow-indigo-200 hover:bg-indigo-700 hover:-translate-y-1 transition-all"
+              >
+                Lancer la session ({standardSessionCount})
+              </Link>
+            ) : (
+              <div className="py-4 bg-slate-100 text-slate-400 font-bold text-lg rounded-2xl border border-slate-200 flex items-center justify-center gap-2">
+                <span>
+                  {isAllFinished ? "Tout est fini ! 🏆" : "Objectif atteint ✅"}
+                </span>
+              </div>
+            )}
 
-          {/* Stats Globales Discrètes */}
-          <div className="pt-4 border-t border-slate-100 flex justify-between text-xs text-slate-400 font-medium uppercase tracking-widest">
-            <span>Total Base : {totalSentences}</span>
-            <span>Appris : {learnedCount}</span>
+            {/* BOUTON BONUS */}
+            {canStartBonus && (
+              <div className="animate-fade-in">
+                <p className="text-xs text-slate-400 mb-2">
+                  Envie d'avancer plus vite ?
+                </p>
+                <Link
+                  href={`/${lang}/learn?mode=bonus`}
+                  className="block w-full py-3 bg-white border-2 border-indigo-600 text-indigo-600 font-bold rounded-2xl hover:bg-indigo-50 transition-colors"
+                >
+                  + 10 Mots Bonus 🚀
+                </Link>
+              </div>
+            )}
+
+            {/* BOUTON RÉVISION LIBRE (NOUVEAU) */}
+            {canStartFreeReview && (
+              <div className="pt-2 border-t border-slate-100 mt-4">
+                <p className="text-xs text-slate-400 mb-2 mt-2">
+                  Réviser sans pression
+                </p>
+                <Link
+                  href={`/${lang}/learn?mode=review-all`}
+                  className="block w-full py-3 bg-purple-50 text-purple-700 border border-purple-100 font-bold rounded-2xl hover:bg-purple-100 transition-colors"
+                >
+                  ⚡️ Révision Aléatoire (20 mots)
+                </Link>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Menu Rapide */}
+        {/* Footer Navigation */}
         <div className="grid grid-cols-2 gap-4">
           <Link
             href={`/${lang}/deck`}
