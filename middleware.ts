@@ -1,53 +1,71 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { createServerClient } from "@supabase/ssr";
 
-// Les langues supportées par ton app
 const SUPPORTED_LOCALES = ["en", "es", "de"];
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
+  let response = NextResponse.next({
+    request: { headers: request.headers },
+  });
+
+  // 1. Gestion de la Session Supabase (Rafraîchir les cookies)
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value, options }) =>
+            request.cookies.set(name, value)
+          );
+          response = NextResponse.next({ request });
+          cookiesToSet.forEach(({ name, value, options }) =>
+            response.cookies.set(name, value, options)
+          );
+        },
+      },
+    }
+  );
+  // On appelle getUser pour rafraîchir le token si besoin
+  await supabase.auth.getUser();
+
+  // 2. Gestion de la Redirection de Langue (Notre ancien code)
   const { pathname } = request.nextUrl;
 
-  // 1. Ignorer les fichiers statiques (images, css) et les appels API internes
   if (
     pathname.startsWith("/_next") ||
     pathname.startsWith("/api") ||
     pathname.startsWith("/static") ||
-    pathname.includes(".") // fichiers avec extension (favicon.ico, etc.)
+    pathname.includes(".") ||
+    pathname.startsWith("/login") // IMPORTANT : Ne pas rediriger /login
   ) {
-    return NextResponse.next();
+    return response;
   }
 
-  // 2. Vérifier si l'URL contient déjà une langue (ex: /en/dashboard)
   const pathnameHasLocale = SUPPORTED_LOCALES.some(
     (locale) => pathname.startsWith(`/${locale}/`) || pathname === `/${locale}`
   );
 
   if (pathnameHasLocale) {
-    return NextResponse.next();
+    return response;
   }
 
-  // 3. Gestion de la page d'accueil racine (/)
   if (pathname === "/") {
-    // Vérifier si un cookie de préférence existe
     const localeCookie = request.cookies.get("last_language_preference");
-
-    // Si on a un cookie valide (ex: 'en'), on redirige directement
     if (localeCookie && SUPPORTED_LOCALES.includes(localeCookie.value)) {
       return NextResponse.redirect(
         new URL(`/${localeCookie.value}`, request.url)
       );
     }
-
-    // Sinon, on laisse passer vers la page d'accueil (le menu de choix)
-    return NextResponse.next();
+    return response;
   }
 
-  // Pour toute autre route non gérée, on laisse passer (ou on pourrait rediriger vers 404)
-  return NextResponse.next();
+  return response;
 }
 
 export const config = {
-  matcher: [
-    // Appliquer le middleware sur tout sauf les fichiers internes
-    "/((?!_next/static|_next/image|favicon.ico).*)",
-  ],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

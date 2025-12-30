@@ -1,65 +1,109 @@
-import { selectLanguage } from "./actions";
+import Link from "next/link";
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 
-// Pour l'instant, on met les langues en dur pour que ça marche tout de suite.
-// Plus tard, on pourra les charger depuis la DB Supabase si tu veux.
-const AVAILABLE_LANGUAGES = [
-  { code: "en", name: "Anglais", flag: "🇬🇧" },
-  { code: "es", name: "Espagnol", flag: "🇪🇸" },
-  { code: "de", name: "Allemand", flag: "🇩🇪" },
-];
+export default async function HomePage() {
+  // Vérification Auth
+  const cookieStore = await cookies();
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll();
+        },
+        setAll() {},
+      },
+    }
+  );
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-export default function Home() {
+  if (!user) {
+    redirect("/login");
+  }
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-slate-50">
-      <div className="max-w-md w-full text-center space-y-8">
-        {/* Titre */}
-        <div className="space-y-2">
-          <h1 className="text-4xl font-bold tracking-tight text-slate-900">
-            LingoDeck
+    <div className="min-h-screen bg-slate-50 p-6 flex flex-col items-center justify-center font-sans">
+      <div className="max-w-md w-full space-y-8">
+        <div className="text-center space-y-2">
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">
+            LingoDeck <span className="text-indigo-600">Med</span>
           </h1>
-          <p className="text-slate-500">
-            Choisis une langue pour commencer ta session.
-          </p>
+          <p className="text-slate-500">Choisis ta langue de travail.</p>
         </div>
 
-        {/* Grille des langues */}
-        <div className="grid grid-cols-1 gap-4">
-          {AVAILABLE_LANGUAGES.map((lang) => (
-            <LanguageButton key={lang.code} lang={lang} />
-          ))}
+        <div className="grid gap-4">
+          {/* ANGLAIS */}
+          <Link
+            href="/en"
+            className="group relative bg-white p-6 rounded-2xl shadow-sm border border-slate-200 hover:border-indigo-500 hover:shadow-md transition-all flex items-center gap-4"
+          >
+            <span className="text-4xl group-hover:scale-110 transition-transform">
+              🇬🇧
+            </span>
+            <div>
+              <h2 className="text-lg font-bold text-slate-800">
+                Anglais Médical
+              </h2>
+              <p className="text-sm text-slate-400">English</p>
+            </div>
+            <div className="absolute right-6 text-slate-300 group-hover:text-indigo-500">
+              →
+            </div>
+          </Link>
+
+          {/* ESPAGNOL */}
+          <Link
+            href="/es"
+            className="group relative bg-white p-6 rounded-2xl shadow-sm border border-slate-200 hover:border-orange-500 hover:shadow-md transition-all flex items-center gap-4"
+          >
+            <span className="text-4xl group-hover:scale-110 transition-transform">
+              🇪🇸
+            </span>
+            <div>
+              <h2 className="text-lg font-bold text-slate-800">
+                Espagnol Médical
+              </h2>
+              <p className="text-sm text-slate-400">Español</p>
+            </div>
+            <div className="absolute right-6 text-slate-300 group-hover:text-orange-500">
+              →
+            </div>
+          </Link>
+
+          {/* ALLEMAND */}
+          <Link
+            href="/de"
+            className="group relative bg-white p-6 rounded-2xl shadow-sm border border-slate-200 hover:border-yellow-500 hover:shadow-md transition-all flex items-center gap-4"
+          >
+            <span className="text-4xl group-hover:scale-110 transition-transform">
+              🇩🇪
+            </span>
+            <div>
+              <h2 className="text-lg font-bold text-slate-800">
+                Allemand Médical
+              </h2>
+              <p className="text-sm text-slate-400">Deutsch</p>
+            </div>
+            <div className="absolute right-6 text-slate-300 group-hover:text-yellow-500">
+              →
+            </div>
+          </Link>
+        </div>
+
+        <div className="text-center pt-8">
+          <Link
+            href="/profile"
+            className="text-sm font-medium text-slate-400 hover:text-indigo-600 transition-colors"
+          >
+            Gérer mon profil & Déconnexion
+          </Link>
         </div>
       </div>
-    </main>
-  );
-}
-
-// Petit composant bouton isolé pour la propreté
-function LanguageButton({
-  lang,
-}: {
-  lang: { code: string; name: string; flag: string };
-}) {
-  // On utilise bind pour passer l'argument 'code' à la server action
-  const selectLanguageWithCode = selectLanguage.bind(null, lang.code);
-
-  return (
-    <form action={selectLanguageWithCode}>
-      <button
-        type="submit"
-        className="w-full group relative flex items-center justify-between p-4 bg-white border-2 border-slate-200 rounded-xl hover:border-indigo-500 hover:shadow-md transition-all duration-200"
-      >
-        <div className="flex items-center gap-4">
-          <span className="text-4xl">{lang.flag}</span>
-          <span className="text-lg font-medium text-slate-700 group-hover:text-indigo-600">
-            {lang.name}
-          </span>
-        </div>
-
-        {/* Petite flèche qui bouge au survol */}
-        <span className="text-slate-300 group-hover:text-indigo-500 group-hover:translate-x-1 transition-transform">
-          →
-        </span>
-      </button>
-    </form>
+    </div>
   );
 }
