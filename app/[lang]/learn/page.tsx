@@ -11,15 +11,7 @@ export default function LearnPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // On récupère le mode
-  const modeParam = searchParams.get("mode");
-  // On normalise le mode pour TypeScript
-  const mode =
-    modeParam === "bonus" || modeParam === "review-all"
-      ? modeParam
-      : "standard";
-
-  // Est-ce un mode "Sans impact" ?
+  const mode = searchParams.get("mode") === "bonus" ? "bonus" : "standard";
   const isFreeMode = mode === "review-all";
 
   // États
@@ -49,7 +41,7 @@ export default function LearnPage() {
   useEffect(() => {
     if (!isLoading) {
       if (status === "idle") {
-        setTimeout(() => inputRef.current?.focus(), 50);
+        setTimeout(() => inputRef.current?.focus(), 100);
       } else {
         setTimeout(() => nextButtonRef.current?.focus(), 50);
       }
@@ -58,14 +50,14 @@ export default function LearnPage() {
 
   if (isLoading)
     return (
-      <div className="min-h-screen flex items-center justify-center text-slate-500">
+      <div className="fixed inset-0 flex items-center justify-center text-slate-500 bg-slate-100">
         Chargement...
       </div>
     );
 
   if (!isLoading && cards.length === 0) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-8 bg-slate-50 text-center">
+      <div className="fixed inset-0 flex flex-col items-center justify-center p-8 bg-slate-50 text-center">
         <div className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full border border-slate-100">
           <h2 className="text-2xl font-bold text-slate-800 mb-4">
             {isFreeMode ? "Entraînement terminé ! 💪" : "Session terminée ! 🎉"}
@@ -88,16 +80,13 @@ export default function LearnPage() {
 
   const currentCard = cards[currentIndex];
 
-  // --- TRAITEMENT DU RÉSULTAT ---
+  // --- LOGIQUE ---
   const processResult = async (isCorrect: boolean) => {
     if (isCorrect) setStatus("success");
     else setStatus("error");
 
-    // SI ON EST EN MODE LIBRE (REVIEW-ALL) : ON NE SAUVEGARDE RIEN EN DB !
-    // On s'arrête ici pour la partie "Backend".
     if (isFreeMode) return;
 
-    // SINON (Mode Standard/Bonus) : On sauvegarde
     let result = { success: true, error: "" };
 
     if (!currentCard.isRetry) {
@@ -114,8 +103,7 @@ export default function LearnPage() {
     }
 
     if (result && !result.success) {
-      console.error("Erreur de sauvegarde :", result.error);
-      alert("Erreur de sauvegarde : " + result.error);
+      console.error("Erreur sauvegarde :", result.error);
     }
   };
 
@@ -135,11 +123,9 @@ export default function LearnPage() {
   };
 
   const handleNext = () => {
-    // Mastery Learning : Même en mode libre, si c'est faux, on le refait à la fin !
     if (status === "error") {
       setCards((prev) => [...prev, { ...currentCard, isRetry: true }]);
     }
-
     if (currentIndex < cards.length - 1) {
       setCurrentIndex((prev) => prev + 1);
       setInput("");
@@ -161,17 +147,17 @@ export default function LearnPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center p-4 font-sans">
-      {/* HEADER */}
-      <div className="w-full max-w-xl mb-4 flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest">
+    // CONTENEUR PRINCIPAL : "fixed inset-0" empêche la page entière de scroller quand le clavier sort
+    <div className="fixed inset-0 h-[100dvh] bg-slate-100 flex flex-col items-center justify-start md:justify-center font-sans overflow-hidden">
+      {/* 1. HEADER (Progression) - Fixe en haut */}
+      <div className="w-full max-w-xl p-4 md:mb-2 flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest shrink-0 z-10">
         <span>
           Carte {currentIndex + 1} / {cards.length}
         </span>
 
-        {/* Badge Spécial Mode Libre */}
         {isFreeMode ? (
           <span className="px-2 py-1 rounded-md bg-purple-100 text-purple-600 border border-purple-200">
-            Mode Entraînement (Sans impact)
+            Mode Entraînement
           </span>
         ) : currentCard.isRetry ? (
           <span className="px-2 py-1 rounded-md bg-red-100 text-red-600 animate-pulse">
@@ -190,10 +176,14 @@ export default function LearnPage() {
         )}
       </div>
 
-      {/* CARTE */}
+      {/* 2. LA CARTE (Zone Flexible) */}
+      {/* Mobile : flex-1 (prend tout l'espace dispo), pas de arrondi en bas pour maximiser l'espace
+          Desktop : hauteur auto, max-height définie, bords arrondis 
+      */}
       <div
         className={`
-        w-full max-w-xl bg-white rounded-3xl shadow-xl overflow-hidden transition-all duration-300 border-2 relative
+        w-full max-w-xl bg-white flex flex-col shadow-xl overflow-hidden transition-all duration-300 border-2 relative
+        flex-1 md:flex-none md:h-auto md:min-h-[500px] md:rounded-3xl
         ${
           status === "idle"
             ? isFreeMode
@@ -205,9 +195,9 @@ export default function LearnPage() {
         ${status === "success" ? "border-green-100 ring-4 ring-green-50" : ""}
       `}
       >
-        {/* HAUT */}
-        <div className="bg-slate-50 p-6 text-center border-b border-slate-100">
-          <h1 className="text-3xl md:text-4xl font-extrabold text-slate-800 mb-3 tracking-tight">
+        {/* A. HAUT DE CARTE (Indice) - Ne rétrécit pas (shrink-0) */}
+        <div className="bg-slate-50 p-6 text-center border-b border-slate-100 shrink-0">
+          <h1 className="text-2xl md:text-4xl font-extrabold text-slate-800 mb-2 md:mb-3 tracking-tight">
             {currentCard.hint || "..."}
           </h1>
           <div className="flex flex-wrap gap-2 justify-center min-h-[24px]">
@@ -224,8 +214,8 @@ export default function LearnPage() {
           </div>
         </div>
 
-        {/* CONTENU */}
-        <div className="p-8 bg-white relative">
+        {/* B. CENTRE (Phrase) - C'est LUI qui scrolle si le clavier écrase l'écran */}
+        <div className="p-6 md:p-8 bg-white relative flex-1 overflow-y-auto">
           <div className="absolute top-4 right-4">
             {status === "idle" ? (
               <span className="text-slate-200 cursor-not-allowed">
@@ -265,7 +255,7 @@ export default function LearnPage() {
             )}
           </div>
 
-          <p className="text-xl text-slate-600 text-center leading-relaxed font-medium mt-2">
+          <p className="text-lg md:text-xl text-slate-600 text-center leading-relaxed font-medium mt-2">
             {currentCard.display_text
               .split("...")
               .map((part: string, i: number) => (
@@ -293,7 +283,7 @@ export default function LearnPage() {
           </p>
 
           {status !== "idle" && (
-            <div className="mt-8 flex flex-col items-center animate-bounce-short">
+            <div className="mt-8 flex flex-col items-center animate-bounce-short pb-4">
               <div
                 className={`text-center ${
                   status === "error" ? "text-red-600" : "text-green-600"
@@ -303,7 +293,7 @@ export default function LearnPage() {
                   {status === "error" ? "La bonne réponse :" : "Excellent !"}
                 </p>
                 <div className="flex items-center gap-3 justify-center">
-                  <span className="text-3xl font-extrabold">
+                  <span className="text-2xl md:text-3xl font-extrabold">
                     {currentCard.answer_target}
                   </span>
                   <button
@@ -323,17 +313,12 @@ export default function LearnPage() {
                   </button>
                 </div>
               </div>
-              {status === "error" && (
-                <p className="text-xs text-slate-400 mt-4 italic">
-                  Carte replacée à la fin.
-                </p>
-              )}
             </div>
           )}
         </div>
 
-        {/* BAS */}
-        <div className="p-4 bg-slate-50 border-t border-slate-100">
+        {/* C. BAS (Input) - Reste collé au clavier ou au bas de carte */}
+        <div className="p-4 bg-slate-50 border-t border-slate-100 shrink-0 z-20">
           {status === "idle" ? (
             <form onSubmit={handleSubmit} className="space-y-3">
               <input
@@ -342,10 +327,13 @@ export default function LearnPage() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
+                // Optimisations Mobile
+                autoCorrect="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                autoComplete="off"
                 className="w-full bg-white border border-slate-300 rounded-xl p-3 text-center text-lg outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all font-medium text-slate-800 placeholder:text-slate-300"
                 placeholder="Tape la traduction..."
-                autoComplete="off"
-                autoCapitalize="none"
               />
               <div className="flex gap-2">
                 <button
@@ -380,12 +368,13 @@ export default function LearnPage() {
         </div>
       </div>
 
-      <div className="mt-6">
+      {/* 3. FOOTER (Quitter) - Fixe ou en bas */}
+      <div className="p-4 shrink-0 md:mt-4 z-10">
         <Link
           href={`/${lang}`}
           className="text-slate-400 hover:text-slate-600 text-xs font-bold uppercase tracking-widest transition-colors"
         >
-          Quitter
+          Quitter la session
         </Link>
       </div>
     </div>
