@@ -25,6 +25,7 @@ export default function LearnPage() {
 
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
+  const [feedbackMsg, setFeedbackMsg] = useState("");
 
   const inputRef = useRef<HTMLInputElement>(null);
   const nextButtonRef = useRef<HTMLButtonElement>(null);
@@ -79,25 +80,81 @@ export default function LearnPage() {
 
   const currentCard = cards[currentIndex];
 
+  // --- LOGIQUE UNIFIÉE ---
   const processResult = async (isCorrect: boolean) => {
-    if (isCorrect) setStatus("success");
-    else setStatus("error");
+    // 1. GESTION DES ERREURS (POUR TOUS LES MODES)
+    // Si faux, on réinsère la carte un peu plus loin, même en mode libre.
+    if (!isCorrect) {
+      setStatus("error");
+      setFeedbackMsg("On la revoit dans 1 minute !");
 
-    if (isFreeMode) return;
+      const nextQueue = [...cards];
+      const retryCard = { ...currentCard, isRetry: true };
 
-    let result = { success: true, error: "" };
+      // Insertion à currentIndex + 3 (ou à la fin si le paquet est petit)
+      const insertIndex = Math.min(currentIndex + 3, nextQueue.length);
+      nextQueue.splice(insertIndex, 0, retryCard);
 
-    if (!currentCard.isRetry) {
-      // @ts-ignore
-      result = await saveResult(
-        currentCard.review_id,
-        currentCard.id,
-        isCorrect,
-        currentCard.interval
-      );
-    } else if (currentCard.isRetry && isCorrect) {
-      // @ts-ignore
-      result = await saveResult(currentCard.review_id, currentCard.id, true, 0);
+      setCards(nextQueue);
+      return; // On s'arrête là (pas de save)
+    }
+
+    // 2. GESTION DES SUCCÈS
+    setStatus("success");
+
+    // CAS A : Mode Entraînement (Review All)
+    if (isFreeMode) {
+      setFeedbackMsg("Bien joué !");
+      // En mode libre, si c'est juste, on ne fait rien de spécial (pas de save, pas de re-queue)
+      // La carte est considérée comme "vue".
+      return;
+    }
+
+    // CAS B : Mode Standard (Sauvegarde DB + Logique "Nouveau Mot")
+    const nextQueue = [...cards];
+
+    // Est-ce un NOUVEAU mot qu'on voit pour la première fois ?
+    const isNewCardFirstStep =
+      currentCard.type === "new" &&
+      !currentCard.isRetry &&
+      !currentCard.learningStep2;
+
+    if (isNewCardFirstStep) {
+      setFeedbackMsg("Bien ! On valide ça une 2ème fois tout à l'heure.");
+
+      // On réinsère pour la validation étape 2
+      const step2Card = { ...currentCard, learningStep2: true };
+      const insertIndex = Math.min(currentIndex + 5, nextQueue.length);
+      nextQueue.splice(insertIndex, 0, step2Card);
+
+      setCards(nextQueue);
+    } else {
+      // Validation finale (Sauvegarde DB)
+      setFeedbackMsg("Excellent !");
+
+      let result = { success: true, error: "" };
+
+      if (!currentCard.isRetry) {
+        // @ts-ignore
+        result = await saveResult(
+          currentCard.review_id,
+          currentCard.id,
+          true,
+          currentCard.interval
+        );
+      } else {
+        // @ts-ignore
+        result = await saveResult(
+          currentCard.review_id,
+          currentCard.id,
+          true,
+          0
+        );
+      }
+
+      if (result && !result.success) {
+        console.error("Erreur sauvegarde :", result.error);
+      }
     }
   };
 
@@ -117,9 +174,8 @@ export default function LearnPage() {
   };
 
   const handleNext = () => {
-    if (status === "error") {
-      setCards((prev) => [...prev, { ...currentCard, isRetry: true }]);
-    }
+    setFeedbackMsg(""); // Reset message
+
     if (currentIndex < cards.length - 1) {
       setCurrentIndex((prev) => prev + 1);
       setInput("");
@@ -203,25 +259,45 @@ export default function LearnPage() {
 
         <div className="p-8 bg-white relative">
           <div className="absolute top-4 right-4">
-            <button
-              onClick={() => speak(currentCard.content_raw, lang as string)}
-              className="p-2 text-indigo-500 bg-indigo-50 rounded-full hover:bg-indigo-100 transition-colors"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={2}
-                stroke="currentColor"
-                className="w-5 h-5"
+            {status === "idle" ? (
+              <span
+                className="text-slate-200 cursor-not-allowed"
+                title="Réponds d'abord pour écouter"
               >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z"
-                />
-              </svg>
-            </button>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  className="w-6 h-6"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M12 1.5a5.25 5.25 0 00-5.25 5.25v3a3 3 0 00-3 3v6.75a3 3 0 003 3h10.5a3 3 0 003-3v-6.75a3 3 0 00-3-3v-3c0-2.9-2.35-5.25-5.25-5.25zm3.75 8.25v-3a3.75 3.75 0 10-7.5 0v3h7.5z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              </span>
+            ) : (
+              <button
+                onClick={() => speak(currentCard.content_raw, lang as string)}
+                className="p-2 text-indigo-500 bg-indigo-50 rounded-full hover:bg-indigo-100 transition-colors"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  stroke="currentColor"
+                  className="w-5 h-5"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z"
+                  />
+                </svg>
+              </button>
+            )}
           </div>
 
           <div className="text-xl md:text-2xl text-slate-600 text-center leading-loose font-medium mt-6">
@@ -230,13 +306,14 @@ export default function LearnPage() {
                 {part}
                 {i < textParts.length - 1 && (
                   <span className="inline-grid align-baseline items-center justify-items-center relative mx-1">
-                    {/* FANTÔME : Nouveau Ratio à 0.75 */}
+                    {/* FANTÔME : Ratio 0.65 */}
                     <span
                       className="col-start-1 row-start-1 invisible whitespace-pre font-bold px-0 border-b-2 border-transparent pointer-events-none"
                       style={{
-                        minWidth: `${
-                          currentCard.answer_target.length * 0.75
-                        }ch`,
+                        minWidth: `${Math.max(
+                          2,
+                          currentCard.answer_target.length * 0.65
+                        )}ch`,
                       }}
                     >
                       {input}
@@ -306,6 +383,12 @@ export default function LearnPage() {
                     </svg>
                   </button>
                 </div>
+                {/* Message Feedback */}
+                {feedbackMsg && (
+                  <p className="text-xs text-slate-400 mt-4 italic font-medium opacity-80 animate-fade-in">
+                    {feedbackMsg}
+                  </p>
+                )}
               </div>
             </div>
           )}

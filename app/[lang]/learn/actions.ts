@@ -13,7 +13,6 @@ function shuffleArray(array: any[]) {
 }
 
 // --- 1. RÉCUPÉRATION DE LA SESSION ---
-// On change le type de mode pour accepter 'review-all'
 export async function getSession(
   lang: string,
   mode: "standard" | "bonus" | "review-all" = "standard"
@@ -46,9 +45,9 @@ export async function getSession(
   const langSentenceIds = langSentences?.map((s) => s.id) || [];
   if (langSentenceIds.length === 0) return [];
 
-  // --- MODE RÉVISION LIBRE (NOUVEAU) ---
+  // --- MODE RÉVISION LIBRE (REVIEW-ALL) ---
   if (mode === "review-all") {
-    // 1. On récupère TOUTES les reviews de l'utilisateur pour cette langue
+    // 1. On récupère TOUT l'historique
     const { data: allReviews } = await supabase
       .from("reviews")
       .select("sentence_id, interval, ease_factor, created_at")
@@ -57,25 +56,28 @@ export async function getSession(
 
     if (!allReviews || allReviews.length === 0) return [];
 
-    // 2. On mélange et on en prend 20
-    const shuffledReviews = shuffleArray([...allReviews]).slice(0, 20);
-    const reviewIds = shuffledReviews.map((r) => r.sentence_id);
+    // 2. On mélange TOUT l'historique et on en garde 20
+    const selectedReviews = shuffleArray([...allReviews]).slice(0, 20);
+    const reviewIds = selectedReviews.map((r) => r.sentence_id);
 
-    // 3. On récupère les phrases correspondantes
+    // 3. On récupère le contenu des phrases
     const { data: sentences } = await supabase
       .from("sentences")
       .select("*")
       .in("id", reviewIds);
 
-    // 4. On formate (on ajoute un flag isFreeMode pour le front)
-    return (
+    // 4. On combine les données
+    const finalCards =
       sentences?.map((s) => ({
         ...s,
         type: "review",
-        mode: "free", // Indique que c'est du bonus
-        ...shuffledReviews.find((r) => r.sentence_id === s.id),
-      })) || []
-    );
+        mode: "free",
+        ...selectedReviews.find((r) => r.sentence_id === s.id),
+      })) || [];
+
+    // 5. IMPORTANT : On remélange le résultat final pour l'affichage
+    // (Car l'étape 3 peut avoir renvoyé les phrases triées par ID)
+    return shuffleArray(finalCards);
   }
 
   // --- MODES CLASSIQUES (Standard / Bonus) ---
@@ -84,13 +86,19 @@ export async function getSession(
   let reviewsDue: any[] = [];
 
   if (mode === "standard") {
-    const now = new Date().toISOString();
+    // Logique "Night Owl" (Jusqu'à demain 4h00)
+    const today = new Date();
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(4, 0, 0, 0);
+    const cutoffDate = tomorrow.toISOString();
+
     const { data: reviews } = await supabase
       .from("reviews")
       .select("sentence_id, interval, ease_factor, created_at")
       .eq("user_id", user.id)
       .in("sentence_id", langSentenceIds)
-      .lte("next_review_date", now);
+      .lte("next_review_date", cutoffDate);
 
     if (reviews && reviews.length > 0) {
       const reviewIds = reviews.map((r) => r.sentence_id);
@@ -105,16 +113,23 @@ export async function getSession(
           type: "review",
           ...reviews.find((r) => r.sentence_id === s.id),
         })) || [];
+
+      // On mélange les révisions pour ne pas avoir un ordre prévisible
+      reviewsDue = shuffleArray(reviewsDue);
     }
   }
 
-  // C. Quota Nouveaux
+  // C. Quota Nouveaux Mots
   let newCardsLimit = 0;
   if (mode === "bonus") {
     newCardsLimit = 10;
   } else {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // Calcul précis avec règle des 4h du matin pour la journée en cours
+    const currentVirtualDayStart = new Date();
+    if (currentVirtualDayStart.getHours() < 4) {
+      currentVirtualDayStart.setDate(currentVirtualDayStart.getDate() - 1);
+    }
+    currentVirtualDayStart.setHours(4, 0, 0, 0);
 
     const { data: todaysReviews } = await supabase
       .from("reviews")
@@ -125,14 +140,14 @@ export async function getSession(
     const learnedToday =
       todaysReviews?.filter((r) => {
         const d = r.created_at || r.last_reviewed_at;
-        return d && new Date(d) >= today;
+        return d && new Date(d) >= currentVirtualDayStart;
       }).length || 0;
 
     const DAILY_GOAL = 10;
     newCardsLimit = Math.max(0, DAILY_GOAL - learnedToday);
   }
 
-  // D. Récupération Nouvelles Cartes
+  // D. Récupération Nouvelles Cartes (Priorité Ancienneté + Mélange)
   let newCards: any[] = [];
   if (newCardsLimit > 0) {
     const { data: learnedData } = await supabase
@@ -146,21 +161,30 @@ export async function getSession(
     let query = supabase
       .from("sentences")
       .select("*")
-      .eq("language_code", lang);
+      .eq("language_code", lang)
+      .order("created_at", { ascending: true }); // Priorité aux plus vieux
 
     if (learnedIds.length > 0) {
       query = query.not("id", "in", `(${learnedIds.join(",")})`);
     }
 
     const { data: sentences } = await query.limit(newCardsLimit);
-    newCards =
-      sentences?.map((s) => ({ ...s, type: "new", interval: 0 })) || [];
+
+    // Mélange pour l'affichage
+    const shuffledSentences = sentences ? shuffleArray(sentences) : [];
+
+    newCards = shuffledSentences.map((s) => ({
+      ...s,
+      type: "new",
+      interval: 0,
+    }));
   }
 
+  // On retourne le tout (Révisions d'abord, puis Nouveaux)
   return [...reviewsDue, ...newCards];
 }
 
-// --- 2. SAUVEGARDE (Inchangée mais je la remets pour être complet) ---
+// --- 2. SAUVEGARDE DU RÉSULTAT ---
 export async function saveResult(
   review_id: string | null,
   sentence_id: string,
@@ -194,6 +218,7 @@ export async function saveResult(
     if (currentInterval === 0) nextInterval = 1;
     else if (currentInterval === 1) nextInterval = 3;
     else nextInterval = Math.round(currentInterval * easeFactor);
+
     nextDate.setDate(nextDate.getDate() + nextInterval);
   } else {
     nextInterval = 1;

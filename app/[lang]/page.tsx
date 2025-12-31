@@ -32,7 +32,26 @@ export default async function LanguageDashboard({ params }: Props) {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  // --- 1. RÉCUPÉRATION DES DONNÉES ---
+  // --- 1. DÉFINITION DES DATES (Logic Night Owl & Anticipation) ---
+
+  const nowObj = new Date();
+
+  // A. Date Butoir pour les révisions (Comme dans learn/actions.ts)
+  // On inclut tout ce qui est prévu jusqu'à "Demain 4h00"
+  const tomorrow = new Date(nowObj);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(4, 0, 0, 0);
+  const reviewCutoff = tomorrow.toISOString();
+
+  // B. Début de la journée virtuelle (Pour le quota "Appris aujourd'hui")
+  // Si il est avant 4h du matin, on compte pour la journée d'hier
+  const currentVirtualDayStart = new Date(nowObj);
+  if (currentVirtualDayStart.getHours() < 4) {
+    currentVirtualDayStart.setDate(currentVirtualDayStart.getDate() - 1);
+  }
+  currentVirtualDayStart.setHours(4, 0, 0, 0);
+
+  // --- 2. RÉCUPÉRATION DES DONNÉES ---
 
   // A. On récupère TOUTES les phrases de la langue actuelle
   const { data: sentences } = await supabase
@@ -49,11 +68,7 @@ export default async function LanguageDashboard({ params }: Props) {
   let learnedTodayCount = 0;
 
   if (sentenceIds.length > 0) {
-    const now = new Date().toISOString();
-    const todayMidnight = new Date();
-    todayMidnight.setHours(0, 0, 0, 0); // Minuit pile ce matin
-
-    // On sélectionne created_at ET last_reviewed_at pour être sûr d'avoir une date valide
+    // On sélectionne created_at ET last_reviewed_at
     const { data: reviews } = await supabase
       .from("reviews")
       .select("next_review_date, created_at, last_reviewed_at")
@@ -64,20 +79,21 @@ export default async function LanguageDashboard({ params }: Props) {
       // Total appris (toutes dates confondues)
       learnedCount = reviews.length;
 
-      // À réviser (Date de révision dépassée)
-      dueCount = reviews.filter((r) => r.next_review_date <= now).length;
+      // À réviser (Date <= Demain 4h00)
+      dueCount = reviews.filter(
+        (r) => r.next_review_date <= reviewCutoff
+      ).length;
 
-      // Appris AUJOURD'HUI
-      // LOGIQUE ROBUSTE : Si created_at est vide, on utilise last_reviewed_at
+      // Appris AUJOURD'HUI (Depuis 4h00 ce matin)
       learnedTodayCount = reviews.filter((r) => {
         const dateString = r.created_at || r.last_reviewed_at;
         if (!dateString) return false;
-        return new Date(dateString) >= todayMidnight;
+        return new Date(dateString) >= currentVirtualDayStart;
       }).length;
     }
   }
 
-  // --- 2. CALCULS DE SESSION ---
+  // --- 3. CALCULS DE SESSION ---
 
   const DAILY_GOAL = 10;
 
@@ -91,23 +107,15 @@ export default async function LanguageDashboard({ params }: Props) {
   const dailyQuotaRemaining = Math.max(0, DAILY_GOAL - learnedTodayCount);
 
   // LE NOMBRE RÉEL DE NOUVELLES CARTES À CHARGER
-  // (Le plus petit entre "Quota restant" et "Ce qui existe en base")
   const newCardsToLearn = Math.min(dailyQuotaRemaining, trueUnlearnedRemaining);
 
   // Taille de la session (Révisions + Nouveaux)
   const standardSessionCount = dueCount + newCardsToLearn;
 
-  // Logique d'affichage des boutons
   const canStartStandard = standardSessionCount > 0;
-
-  // Bonus : Uniquement si objectif atteint ET qu'il reste du contenu en base
   const canStartBonus =
     dailyQuotaRemaining === 0 && dueCount === 0 && trueUnlearnedRemaining > 0;
-
-  // Si on a tout fini (plus rien en base et tout révisé)
   const isAllFinished = trueUnlearnedRemaining === 0 && dueCount === 0;
-
-  // Révision Libre : Possible si on a appris au moins 1 mot
   const canStartFreeReview = learnedCount > 0;
 
   return (
@@ -226,7 +234,7 @@ export default async function LanguageDashboard({ params }: Props) {
               </div>
             )}
 
-            {/* BOUTON RÉVISION LIBRE (NOUVEAU) */}
+            {/* BOUTON RÉVISION LIBRE */}
             {canStartFreeReview && (
               <div className="pt-2 border-t border-slate-100 mt-4">
                 <p className="text-xs text-slate-400 mb-2 mt-2">
