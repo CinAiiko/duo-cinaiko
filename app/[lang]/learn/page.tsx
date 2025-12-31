@@ -11,8 +11,16 @@ export default function LearnPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const mode = searchParams.get("mode") === "bonus" ? "bonus" : "standard";
+  // --- CORRECTION DE L'ERREUR ICI ---
+  const modeParam = searchParams.get("mode");
+  // On accepte 'bonus' ou 'review-all', sinon c'est 'standard' par défaut
+  const mode =
+    modeParam === "bonus" || modeParam === "review-all"
+      ? modeParam
+      : "standard";
+
   const isFreeMode = mode === "review-all";
+  // ----------------------------------
 
   // États
   const [cards, setCards] = useState<any[]>([]);
@@ -147,9 +155,8 @@ export default function LearnPage() {
   };
 
   return (
-    // CONTENEUR PRINCIPAL : "fixed inset-0" empêche la page entière de scroller quand le clavier sort
     <div className="fixed inset-0 h-[100dvh] bg-slate-100 flex flex-col items-center justify-start md:justify-center font-sans overflow-hidden">
-      {/* 1. HEADER (Progression) - Fixe en haut */}
+      {/* 1. HEADER */}
       <div className="w-full max-w-xl p-4 md:mb-2 flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest shrink-0 z-10">
         <span>
           Carte {currentIndex + 1} / {cards.length}
@@ -176,10 +183,7 @@ export default function LearnPage() {
         )}
       </div>
 
-      {/* 2. LA CARTE (Zone Flexible) */}
-      {/* Mobile : flex-1 (prend tout l'espace dispo), pas de arrondi en bas pour maximiser l'espace
-          Desktop : hauteur auto, max-height définie, bords arrondis 
-      */}
+      {/* 2. LA CARTE */}
       <div
         className={`
         w-full max-w-xl bg-white flex flex-col shadow-xl overflow-hidden transition-all duration-300 border-2 relative
@@ -195,7 +199,7 @@ export default function LearnPage() {
         ${status === "success" ? "border-green-100 ring-4 ring-green-50" : ""}
       `}
       >
-        {/* A. HAUT DE CARTE (Indice) - Ne rétrécit pas (shrink-0) */}
+        {/* A. HAUT DE CARTE */}
         <div className="bg-slate-50 p-6 text-center border-b border-slate-100 shrink-0">
           <h1 className="text-2xl md:text-4xl font-extrabold text-slate-800 mb-2 md:mb-3 tracking-tight">
             {currentCard.hint || "..."}
@@ -214,7 +218,7 @@ export default function LearnPage() {
           </div>
         </div>
 
-        {/* B. CENTRE (Phrase) - C'est LUI qui scrolle si le clavier écrase l'écran */}
+        {/* B. CENTRE */}
         <div className="p-6 md:p-8 bg-white relative flex-1 overflow-y-auto">
           <div className="absolute top-4 right-4">
             {status === "idle" ? (
@@ -317,7 +321,7 @@ export default function LearnPage() {
           )}
         </div>
 
-        {/* C. BAS (Input) - Reste collé au clavier ou au bas de carte */}
+        {/* C. BAS (Input) */}
         <div className="p-4 bg-slate-50 border-t border-slate-100 shrink-0 z-20">
           {status === "idle" ? (
             <form onSubmit={handleSubmit} className="space-y-3">
@@ -327,7 +331,6 @@ export default function LearnPage() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                // Optimisations Mobile
                 autoCorrect="off"
                 autoCapitalize="none"
                 spellCheck={false}
@@ -368,7 +371,7 @@ export default function LearnPage() {
         </div>
       </div>
 
-      {/* 3. FOOTER (Quitter) - Fixe ou en bas */}
+      {/* 3. FOOTER */}
       <div className="p-4 shrink-0 md:mt-4 z-10">
         <Link
           href={`/${lang}`}
