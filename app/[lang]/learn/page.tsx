@@ -11,30 +11,24 @@ export default function LearnPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // On récupère le mode
   const modeParam = searchParams.get("mode");
-  // On normalise le mode pour TypeScript
   const mode =
     modeParam === "bonus" || modeParam === "review-all"
       ? modeParam
       : "standard";
 
-  // Est-ce un mode "Sans impact" ?
   const isFreeMode = mode === "review-all";
 
-  // États
   const [cards, setCards] = useState<any[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
 
-  // États du Quiz
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
 
   const inputRef = useRef<HTMLInputElement>(null);
   const nextButtonRef = useRef<HTMLButtonElement>(null);
 
-  // Chargement
   useEffect(() => {
     const loadData = async () => {
       // @ts-ignore
@@ -45,27 +39,24 @@ export default function LearnPage() {
     loadData();
   }, [lang, mode]);
 
-  // Focus
   useEffect(() => {
-    if (!isLoading) {
-      if (status === "idle") {
-        setTimeout(() => inputRef.current?.focus(), 50);
-      } else {
-        setTimeout(() => nextButtonRef.current?.focus(), 50);
-      }
+    if (!isLoading && status === "idle") {
+      setTimeout(() => inputRef.current?.focus(), 100);
+    } else if (status !== "idle") {
+      setTimeout(() => nextButtonRef.current?.focus(), 50);
     }
   }, [status, isLoading, currentIndex]);
 
   if (isLoading)
     return (
-      <div className="min-h-screen flex items-center justify-center text-slate-500">
+      <div className="min-h-[100dvh] flex items-center justify-center text-slate-500">
         Chargement...
       </div>
     );
 
   if (!isLoading && cards.length === 0) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-8 bg-slate-50 text-center">
+      <div className="min-h-[100dvh] flex flex-col items-center justify-center p-8 bg-slate-50 text-center">
         <div className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full border border-slate-100">
           <h2 className="text-2xl font-bold text-slate-800 mb-4">
             {isFreeMode ? "Entraînement terminé ! 💪" : "Session terminée ! 🎉"}
@@ -88,16 +79,12 @@ export default function LearnPage() {
 
   const currentCard = cards[currentIndex];
 
-  // --- TRAITEMENT DU RÉSULTAT ---
   const processResult = async (isCorrect: boolean) => {
     if (isCorrect) setStatus("success");
     else setStatus("error");
 
-    // SI ON EST EN MODE LIBRE (REVIEW-ALL) : ON NE SAUVEGARDE RIEN EN DB !
-    // On s'arrête ici pour la partie "Backend".
     if (isFreeMode) return;
 
-    // SINON (Mode Standard/Bonus) : On sauvegarde
     let result = { success: true, error: "" };
 
     if (!currentCard.isRetry) {
@@ -111,11 +98,6 @@ export default function LearnPage() {
     } else if (currentCard.isRetry && isCorrect) {
       // @ts-ignore
       result = await saveResult(currentCard.review_id, currentCard.id, true, 0);
-    }
-
-    if (result && !result.success) {
-      console.error("Erreur de sauvegarde :", result.error);
-      alert("Erreur de sauvegarde : " + result.error);
     }
   };
 
@@ -135,11 +117,9 @@ export default function LearnPage() {
   };
 
   const handleNext = () => {
-    // Mastery Learning : Même en mode libre, si c'est faux, on le refait à la fin !
     if (status === "error") {
       setCards((prev) => [...prev, { ...currentCard, isRetry: true }]);
     }
-
     if (currentIndex < cards.length - 1) {
       setCurrentIndex((prev) => prev + 1);
       setInput("");
@@ -150,8 +130,8 @@ export default function LearnPage() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (status === "idle" && e.key === "Enter" && e.ctrlKey) {
-      handleGiveUp();
+    if (status === "idle" && e.key === "Enter") {
+      handleSubmit();
       return;
     }
     if (status !== "idle" && e.key === " ") {
@@ -160,18 +140,17 @@ export default function LearnPage() {
     }
   };
 
+  const textParts = currentCard.display_text.split("...");
+
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center p-4 font-sans">
-      {/* HEADER */}
-      <div className="w-full max-w-xl mb-4 flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest">
+    <div className="min-h-[100dvh] bg-slate-100 flex flex-col items-center justify-start md:justify-center pt-6 md:pt-0 pb-10 p-4 font-sans overflow-y-auto">
+      <div className="w-full max-w-xl mb-4 flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest shrink-0">
         <span>
           Carte {currentIndex + 1} / {cards.length}
         </span>
-
-        {/* Badge Spécial Mode Libre */}
         {isFreeMode ? (
           <span className="px-2 py-1 rounded-md bg-purple-100 text-purple-600 border border-purple-200">
-            Mode Entraînement (Sans impact)
+            Mode Entraînement
           </span>
         ) : currentCard.isRetry ? (
           <span className="px-2 py-1 rounded-md bg-red-100 text-red-600 animate-pulse">
@@ -190,10 +169,9 @@ export default function LearnPage() {
         )}
       </div>
 
-      {/* CARTE */}
       <div
         className={`
-        w-full max-w-xl bg-white rounded-3xl shadow-xl overflow-hidden transition-all duration-300 border-2 relative
+        w-full max-w-xl bg-white rounded-3xl shadow-xl overflow-hidden transition-all duration-300 border-2 relative shrink-0
         ${
           status === "idle"
             ? isFreeMode
@@ -205,9 +183,8 @@ export default function LearnPage() {
         ${status === "success" ? "border-green-100 ring-4 ring-green-50" : ""}
       `}
       >
-        {/* HAUT */}
         <div className="bg-slate-50 p-6 text-center border-b border-slate-100">
-          <h1 className="text-3xl md:text-4xl font-extrabold text-slate-800 mb-3 tracking-tight">
+          <h1 className="text-2xl md:text-3xl font-extrabold text-slate-800 mb-3 tracking-tight">
             {currentCard.hint || "..."}
           </h1>
           <div className="flex flex-wrap gap-2 justify-center min-h-[24px]">
@@ -224,73 +201,80 @@ export default function LearnPage() {
           </div>
         </div>
 
-        {/* CONTENU */}
         <div className="p-8 bg-white relative">
           <div className="absolute top-4 right-4">
-            {status === "idle" ? (
-              <span className="text-slate-200 cursor-not-allowed">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                  className="w-6 h-6"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M12 1.5a5.25 5.25 0 00-5.25 5.25v3a3 3 0 00-3 3v6.75a3 3 0 003 3h10.5a3 3 0 003-3v-6.75a3 3 0 00-3-3v-3c0-2.9-2.35-5.25-5.25-5.25zm3.75 8.25v-3a3.75 3.75 0 10-7.5 0v3h7.5z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-              </span>
-            ) : (
-              <button
-                onClick={() => speak(currentCard.content_raw, lang as string)}
-                className="p-2 text-indigo-500 bg-indigo-50 rounded-full hover:bg-indigo-100"
+            <button
+              onClick={() => speak(currentCard.content_raw, lang as string)}
+              className="p-2 text-indigo-500 bg-indigo-50 rounded-full hover:bg-indigo-100 transition-colors"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                strokeWidth={2}
+                stroke="currentColor"
+                className="w-5 h-5"
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  strokeWidth={2}
-                  stroke="currentColor"
-                  className="w-5 h-5"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z"
-                  />
-                </svg>
-              </button>
-            )}
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z"
+                />
+              </svg>
+            </button>
           </div>
 
-          <p className="text-xl text-slate-600 text-center leading-relaxed font-medium mt-2">
-            {currentCard.display_text
-              .split("...")
-              .map((part: string, i: number) => (
-                <span key={i}>
-                  {part}
-                  {i === 0 && (
-                    <span className="inline-block mx-1 align-bottom">
+          <div className="text-xl md:text-2xl text-slate-600 text-center leading-loose font-medium mt-6">
+            {textParts.map((part: string, i: number) => (
+              <span key={i}>
+                {part}
+                {i < textParts.length - 1 && (
+                  <span className="inline-grid align-baseline items-center justify-items-center relative mx-1">
+                    {/* FANTÔME : Nouveau Ratio à 0.75 */}
+                    <span
+                      className="col-start-1 row-start-1 invisible whitespace-pre font-bold px-0 border-b-2 border-transparent pointer-events-none"
+                      style={{
+                        minWidth: `${
+                          currentCard.answer_target.length * 0.75
+                        }ch`,
+                      }}
+                    >
+                      {input}
+                    </span>
+
+                    <span className="col-start-1 row-start-1 w-full flex justify-center">
                       {status === "idle" ? (
-                        <span className="inline-block w-20 h-7 border-b-2 border-slate-300 animate-pulse rounded-sm opacity-50 mb-1"></span>
+                        <input
+                          ref={inputRef}
+                          type="text"
+                          value={input}
+                          onChange={(e) => setInput(e.target.value)}
+                          onKeyDown={handleKeyDown}
+                          autoCorrect="off"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                          autoComplete="off"
+                          size={1}
+                          className="w-full min-w-0 bg-transparent border-b-2 border-indigo-400 text-indigo-700 text-center outline-none p-0 px-0 focus:border-indigo-600 focus:bg-indigo-50/30 transition-all font-bold placeholder:text-indigo-300"
+                          placeholder="?"
+                        />
                       ) : (
                         <span
-                          className={`px-1 border-b-2 font-bold ${
+                          className={`w-full px-0 border-b-2 font-bold text-center ${
                             status === "success"
-                              ? "border-green-500 text-green-700"
-                              : "border-red-500 text-red-600 line-through decoration-2"
+                              ? "border-green-500 text-green-700 bg-green-50"
+                              : "border-red-500 text-red-600 bg-red-50 line-through decoration-2"
                           }`}
                         >
                           {input || "(Vide)"}
                         </span>
                       )}
                     </span>
-                  )}
-                </span>
-              ))}
-          </p>
+                  </span>
+                )}
+              </span>
+            ))}
+          </div>
 
           {status !== "idle" && (
             <div className="mt-8 flex flex-col items-center animate-bounce-short">
@@ -303,7 +287,7 @@ export default function LearnPage() {
                   {status === "error" ? "La bonne réponse :" : "Excellent !"}
                 </p>
                 <div className="flex items-center gap-3 justify-center">
-                  <span className="text-3xl font-extrabold">
+                  <span className="text-2xl md:text-3xl font-extrabold">
                     {currentCard.answer_target}
                   </span>
                   <button
@@ -323,51 +307,31 @@ export default function LearnPage() {
                   </button>
                 </div>
               </div>
-              {status === "error" && (
-                <p className="text-xs text-slate-400 mt-4 italic">
-                  Carte replacée à la fin.
-                </p>
-              )}
             </div>
           )}
         </div>
 
-        {/* BAS */}
         <div className="p-4 bg-slate-50 border-t border-slate-100">
           {status === "idle" ? (
-            <form onSubmit={handleSubmit} className="space-y-3">
-              <input
-                ref={inputRef}
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                className="w-full bg-white border border-slate-300 rounded-xl p-3 text-center text-lg outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all font-medium text-slate-800 placeholder:text-slate-300"
-                placeholder="Tape la traduction..."
-                autoComplete="off"
-                autoCapitalize="none"
-              />
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={handleGiveUp}
-                  className="w-1/3 py-3 rounded-xl font-bold text-sm text-slate-500 bg-slate-200 hover:bg-slate-300"
-                >
-                  Je ne sais pas
-                </button>
-                <button
-                  type="submit"
-                  className="w-2/3 py-3 rounded-xl font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-md"
-                >
-                  Valider
-                </button>
-              </div>
-            </form>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleGiveUp}
+                className="w-1/3 py-3 rounded-xl font-bold text-sm text-slate-500 bg-slate-200 hover:bg-slate-300 transition-colors"
+              >
+                Je ne sais pas
+              </button>
+              <button
+                onClick={handleSubmit}
+                className="w-2/3 py-3 rounded-xl font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-md transition-colors"
+              >
+                Valider
+              </button>
+            </div>
           ) : (
             <button
               ref={nextButtonRef}
               onClick={handleNext}
-              onKeyDown={handleKeyDown}
               className={`w-full py-4 rounded-xl font-bold text-lg text-white shadow-md transition-all active:scale-95 ${
                 status === "success"
                   ? "bg-green-600 hover:bg-green-700"
@@ -380,7 +344,7 @@ export default function LearnPage() {
         </div>
       </div>
 
-      <div className="mt-6">
+      <div className="mt-6 shrink-0">
         <Link
           href={`/${lang}`}
           className="text-slate-400 hover:text-slate-600 text-xs font-bold uppercase tracking-widest transition-colors"
