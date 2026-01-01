@@ -40,17 +40,12 @@ export default function LearnPage() {
     loadData();
   }, [lang, mode]);
 
-  // Focus gestion
   useEffect(() => {
-    // Tentative de focus au chargement (marche sur Desktop, bloqué par iOS au 1er load)
     if (!isLoading && status === "idle") {
-      // Petit délai pour assurer que le DOM est prêt
-      setTimeout(() => {
-        // L'option { preventScroll: true } évite que la page saute
-        inputRef.current?.focus({ preventScroll: true });
-      }, 50);
+      setTimeout(() => inputRef.current?.focus(), 100);
+    } else if (status !== "idle") {
+      setTimeout(() => nextButtonRef.current?.focus(), 50);
     }
-    // On ne focus plus le bouton Next automatiquement pour éviter de fermer le clavier sur mobile
   }, [status, isLoading, currentIndex]);
 
   if (isLoading)
@@ -85,59 +80,109 @@ export default function LearnPage() {
 
   const currentCard = cards[currentIndex];
 
+  // --- LOGIQUE CORE : DOUBLE VALIDATION ---
   const processResult = async (isCorrect: boolean) => {
+    // A. MODE ENTRAÎNEMENT (Pas de sauvegarde, juste la mécanique de boucle)
+    if (isFreeMode) {
+      if (!isCorrect) {
+        setStatus("error");
+        setFeedbackMsg("Oups ! On la revoit dans 1 minute.");
+        const nextQueue = [...cards];
+        // On réinsère à +3
+        const retryCard = { ...currentCard, isRetry: true };
+        const insertIndex = Math.min(currentIndex + 3, nextQueue.length);
+        nextQueue.splice(insertIndex, 0, retryCard);
+        setCards(nextQueue);
+      } else {
+        setStatus("success");
+        setFeedbackMsg("Bien joué !");
+      }
+      return;
+    }
+
+    // B. MODE APPRENTISSAGE (Standard / Bonus)
+    const nextQueue = [...cards];
+
+    // --- CAS 1 : ÉCHEC (Mauvaise réponse ou "Je ne sais pas") ---
     if (!isCorrect) {
       setStatus("error");
-      setFeedbackMsg("On la revoit dans 1 minute !");
-      const nextQueue = [...cards];
-      const retryCard = { ...currentCard, isRetry: true };
+      setFeedbackMsg("Aïe. On reprend depuis le début dans 1 minute.");
+
+      // On remet la carte à l'étape 0 (même si elle était à l'étape 1)
+      const retryCard = {
+        ...currentCard,
+        isRetry: true,
+        learningStep: 0, // RETOUR À LA CASE DÉPART
+      };
+
+      // Insertion proche (+3 cartes)
       const insertIndex = Math.min(currentIndex + 3, nextQueue.length);
       nextQueue.splice(insertIndex, 0, retryCard);
+
       setCards(nextQueue);
+      // On ne sauvegarde rien
       return;
     }
 
+    // --- CAS 2 : SUCCÈS ---
     setStatus("success");
 
-    if (isFreeMode) {
-      setFeedbackMsg("Bien joué !");
-      return;
+    // Est-ce un "Nouveau Mot" ?
+    if (currentCard.type === "new") {
+      const currentStep = currentCard.learningStep || 0; // 0 par défaut
+
+      if (currentStep === 0) {
+        // ÉTAPE 1 RÉUSSIE -> Passage à l'Étape 2
+        setFeedbackMsg("Bien ! Encore une fois tout à l'heure pour confirmer.");
+
+        const step1Card = {
+          ...currentCard,
+          isRetry: true, // On la considère comme "en cours"
+          learningStep: 1, // On passe à l'étape 1
+        };
+
+        // Insertion moyenne (+5 cartes) pour laisser un peu de temps
+        const insertIndex = Math.min(currentIndex + 5, nextQueue.length);
+        nextQueue.splice(insertIndex, 0, step1Card);
+
+        setCards(nextQueue);
+        // PAS DE SAUVEGARDE DB ICI
+        return;
+      } else if (currentStep === 1) {
+        // ÉTAPE 2 RÉUSSIE -> VALIDATION FINALE
+        setFeedbackMsg("Parfait ! Mot acquis pour aujourd'hui.");
+        // On laisse couler vers la sauvegarde en bas...
+      }
+    } else {
+      // C'est une RÉVISION (Review)
+      setFeedbackMsg("Excellent !");
+      // Si c'était un "Retry" d'une révision ratée, on valide maintenant.
     }
 
-    const nextQueue = [...cards];
-    const isNewCardFirstStep =
-      currentCard.type === "new" &&
-      !currentCard.isRetry &&
-      !currentCard.learningStep2;
+    // --- SAUVEGARDE EN BASE DE DONNÉES ---
+    // On arrive ici seulement si :
+    // 1. C'est un Nouveau Mot validé 2 fois (Step 1 -> Success)
+    // 2. C'est une Révision réussie (Step n/a)
 
-    if (isNewCardFirstStep) {
-      setFeedbackMsg("Bien ! On valide ça une 2ème fois tout à l'heure.");
-      const step2Card = { ...currentCard, learningStep2: true };
-      const insertIndex = Math.min(currentIndex + 5, nextQueue.length);
-      nextQueue.splice(insertIndex, 0, step2Card);
-      setCards(nextQueue);
+    let result = { success: true, error: "" };
+
+    // Si c'était une carte "en cours" (isRetry ou Step 1), on la valide pour demain (interval 0 dans la logique saveResult mettra à demain)
+    if (currentCard.isRetry || currentCard.learningStep === 1) {
+      // @ts-ignore
+      result = await saveResult(currentCard.review_id, currentCard.id, true, 0);
     } else {
-      setFeedbackMsg("Excellent !");
-      let result = { success: true, error: "" };
-      if (!currentCard.isRetry) {
-        // @ts-ignore
-        result = await saveResult(
-          currentCard.review_id,
-          currentCard.id,
-          true,
-          currentCard.interval
-        );
-      } else {
-        // @ts-ignore
-        result = await saveResult(
-          currentCard.review_id,
-          currentCard.id,
-          true,
-          0
-        );
-      }
-      if (result && !result.success)
-        console.error("Erreur sauvegarde :", result.error);
+      // Révision normale réussie du premier coup
+      // @ts-ignore
+      result = await saveResult(
+        currentCard.review_id,
+        currentCard.id,
+        true,
+        currentCard.interval
+      );
+    }
+
+    if (result && !result.success) {
+      console.error("Erreur sauvegarde :", result.error);
     }
   };
 
@@ -152,7 +197,7 @@ export default function LearnPage() {
 
   const handleGiveUp = () => {
     if (status !== "idle") return;
-    setInput(""); // On vide pour montrer que c'est raté
+    setInput("");
     processResult(false);
   };
 
@@ -163,8 +208,7 @@ export default function LearnPage() {
       setCurrentIndex((prev) => prev + 1);
       setInput("");
       setStatus("idle");
-      // FORCE FOCUS POUR MOBILE : On redonne le focus à l'input immédiatement
-      // Le setTimeout aide parfois iOS à reprendre le focus après le clic
+      // Force focus mobile
       setTimeout(() => inputRef.current?.focus(), 0);
     } else {
       router.push(`/${lang}`);
@@ -182,7 +226,7 @@ export default function LearnPage() {
     }
   };
 
-  // ASTUCE MOBILE : Empêcher le bouton de voler le focus quand on clique dessus
+  // Empêche le bouton de voler le focus au clic
   const preventBlur = (e: React.MouseEvent) => {
     e.preventDefault();
   };
@@ -199,19 +243,26 @@ export default function LearnPage() {
           <span className="px-2 py-1 rounded-md bg-purple-100 text-purple-600 border border-purple-200">
             Mode Entraînement
           </span>
-        ) : currentCard.isRetry ? (
+        ) : // Affichage intelligent du badge
+        currentCard.type === "new" ? (
+          // Si c'est un nouveau mot
+          currentCard.learningStep === 1 ? (
+            <span className="px-2 py-1 rounded-md bg-yellow-100 text-yellow-700 animate-pulse border border-yellow-200">
+              Confirmation (2/2)
+            </span>
+          ) : (
+            <span className="px-2 py-1 rounded-md bg-blue-100 text-blue-600">
+              Nouveau (1/2)
+            </span>
+          )
+        ) : // Si c'est une révision
+        currentCard.isRetry ? (
           <span className="px-2 py-1 rounded-md bg-red-100 text-red-600 animate-pulse">
             Répétition
           </span>
         ) : (
-          <span
-            className={`px-2 py-1 rounded-md ${
-              currentCard.type === "new"
-                ? "bg-blue-100 text-blue-600"
-                : "bg-orange-100 text-orange-600"
-            }`}
-          >
-            {currentCard.type === "new" ? "Nouveau" : "Révision"}
+          <span className="px-2 py-1 rounded-md bg-orange-100 text-orange-600">
+            Révision
           </span>
         )}
       </div>
@@ -270,7 +321,6 @@ export default function LearnPage() {
               </span>
             ) : (
               <button
-                // On preventBlur ici aussi pour pas perdre le clavier si on clique sur le son
                 onMouseDown={preventBlur}
                 onClick={() => speak(currentCard.content_raw, lang as string)}
                 className="p-2 text-indigo-500 bg-indigo-50 rounded-full hover:bg-indigo-100 transition-colors"
@@ -311,7 +361,6 @@ export default function LearnPage() {
                       {input}
                     </span>
 
-                    {/* L'INPUT EST TOUJOURS LÀ (opacity-0 quand pas idle) */}
                     <span className="col-start-1 row-start-1 w-full flex justify-center">
                       <input
                         ref={inputRef}
@@ -319,24 +368,21 @@ export default function LearnPage() {
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={handleKeyDown}
-                        autoFocus={true} // Tente le focus natif
+                        autoFocus={true}
                         autoCorrect="off"
                         autoCapitalize="none"
                         spellCheck={false}
                         autoComplete="off"
                         size={1}
-                        // Si status !== idle, on le rend invisible mais ON LE GARDE actif (pas disabled)
-                        // pointer-events-none permet de cliquer au travers si besoin, mais attention le focus reste dessus
                         className={`w-full min-w-0 bg-transparent border-b-2 text-center outline-none p-0 px-0 transition-all font-bold 
                                 ${
                                   status === "idle"
                                     ? "border-indigo-400 text-indigo-700 focus:border-indigo-600 focus:bg-indigo-50/30 placeholder:text-indigo-300"
-                                    : "opacity-0 pointer-events-none" // Invisible mais présent
+                                    : "opacity-0 pointer-events-none"
                                 }`}
                         placeholder="?"
                       />
 
-                      {/* AFFICHAGE DU RÉSULTAT (Superposé à l'input invisible) */}
                       {status !== "idle" && (
                         <span
                           className={`col-start-1 row-start-1 w-full px-0 border-b-2 font-bold text-center pointer-events-none absolute top-0 left-0
@@ -371,7 +417,7 @@ export default function LearnPage() {
                     {currentCard.answer_target}
                   </span>
                   <button
-                    onMouseDown={preventBlur} // Important
+                    onMouseDown={preventBlur}
                     onClick={() =>
                       speak(currentCard.answer_target, lang as string)
                     }
@@ -402,14 +448,14 @@ export default function LearnPage() {
             <div className="flex gap-2">
               <button
                 type="button"
-                onMouseDown={preventBlur} // Empêche de perdre le focus input
+                onMouseDown={preventBlur}
                 onClick={handleGiveUp}
                 className="w-1/3 py-3 rounded-xl font-bold text-sm text-slate-500 bg-slate-200 hover:bg-slate-300 transition-colors"
               >
                 Je ne sais pas
               </button>
               <button
-                onMouseDown={preventBlur} // Empêche de perdre le focus input
+                onMouseDown={preventBlur}
                 onClick={handleSubmit}
                 className="w-2/3 py-3 rounded-xl font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-md transition-colors"
               >
@@ -419,10 +465,6 @@ export default function LearnPage() {
           ) : (
             <button
               ref={nextButtonRef}
-              // Ici, on PEUT laisser le focus aller au bouton pour que l'utilisateur puisse appuyer sur Espace
-              // Mais si on veut garder le clavier, il faut aussi preventBlur.
-              // Dilemme : Clavier ouvert = moins de place pour voir le feedback.
-              // Choix UX : On laisse le bouton prendre le focus pour "Continuer", mais handleNext redonnera le focus à l'input.
               onClick={handleNext}
               className={`w-full py-4 rounded-xl font-bold text-lg text-white shadow-md transition-all active:scale-95 ${
                 status === "success"
