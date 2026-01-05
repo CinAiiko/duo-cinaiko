@@ -147,7 +147,7 @@ export async function getSession(
     newCardsLimit = Math.max(0, DAILY_GOAL - learnedToday);
   }
 
-  // D. Récupération Nouvelles Cartes (Priorité Ancienneté + Mélange)
+  // D. Récupération Nouvelles Cartes (Priorité Ordre Logique + Mélange)
   let newCards: any[] = [];
   if (newCardsLimit > 0) {
     const { data: learnedData } = await supabase
@@ -162,15 +162,17 @@ export async function getSession(
       .from("sentences")
       .select("*")
       .eq("language_code", lang)
-      .order("created_at", { ascending: true }); // Priorité aux plus vieux
+      // MODIFICATION ICI : Tri par external_id pour suivre l'ordre logique (en-01, en-02...)
+      .order("external_id", { ascending: true });
 
     if (learnedIds.length > 0) {
+      // Exclut les phrases déjà apprises (ce qui permet de combler les "trous")
       query = query.not("id", "in", `(${learnedIds.join(",")})`);
     }
 
     const { data: sentences } = await query.limit(newCardsLimit);
 
-    // Mélange pour l'affichage
+    // Mélange pour l'affichage (optionnel, mais garde la session variée si on en apprend plusieurs)
     const shuffledSentences = sentences ? shuffleArray(sentences) : [];
 
     newCards = shuffledSentences.map((s) => ({
