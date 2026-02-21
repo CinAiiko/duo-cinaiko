@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import AutoTTSToggle from "@/app/components/AutoTTSToggle";
 
 type Props = {
   params: Promise<{ lang: string }>;
@@ -14,6 +15,11 @@ export default async function LanguageDashboard({ params }: Props) {
   if (!VALID_LANGS.includes(lang)) redirect("/");
 
   const cookieStore = await cookies();
+
+  // --- Lecture de la préférence Auto TTS ---
+  const autoTTSCookie = cookieStore.get("autoTTS")?.value;
+  const isAutoTTS = autoTTSCookie === "true";
+
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -32,19 +38,14 @@ export default async function LanguageDashboard({ params }: Props) {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  // --- 1. DÉFINITION DES DATES (Logic Night Owl & Anticipation) ---
+  // --- 1. DÉFINITION DES DATES ---
 
   const nowObj = new Date();
-
-  // A. Date Butoir pour les révisions (Comme dans learn/actions.ts)
-  // On inclut tout ce qui est prévu jusqu'à "Demain 4h00"
   const tomorrow = new Date(nowObj);
   tomorrow.setDate(tomorrow.getDate() + 1);
   tomorrow.setHours(4, 0, 0, 0);
   const reviewCutoff = tomorrow.toISOString();
 
-  // B. Début de la journée virtuelle (Pour le quota "Appris aujourd'hui")
-  // Si il est avant 4h du matin, on compte pour la journée d'hier
   const currentVirtualDayStart = new Date(nowObj);
   if (currentVirtualDayStart.getHours() < 4) {
     currentVirtualDayStart.setDate(currentVirtualDayStart.getDate() - 1);
@@ -53,7 +54,6 @@ export default async function LanguageDashboard({ params }: Props) {
 
   // --- 2. RÉCUPÉRATION DES DONNÉES ---
 
-  // A. On récupère TOUTES les phrases de la langue actuelle
   const { data: sentences } = await supabase
     .from("sentences")
     .select("id")
@@ -62,13 +62,11 @@ export default async function LanguageDashboard({ params }: Props) {
   const sentenceIds = sentences?.map((s) => s.id) || [];
   const totalSentencesCount = sentenceIds.length;
 
-  // B. On récupère les Reviews liées à ces phrases
   let learnedCount = 0;
   let dueCount = 0;
   let learnedTodayCount = 0;
 
   if (sentenceIds.length > 0) {
-    // On sélectionne created_at ET last_reviewed_at
     const { data: reviews } = await supabase
       .from("reviews")
       .select("next_review_date, created_at, last_reviewed_at")
@@ -76,15 +74,12 @@ export default async function LanguageDashboard({ params }: Props) {
       .in("sentence_id", sentenceIds);
 
     if (reviews) {
-      // Total appris (toutes dates confondues)
       learnedCount = reviews.length;
 
-      // À réviser (Date <= Demain 4h00)
       dueCount = reviews.filter(
         (r) => r.next_review_date <= reviewCutoff
       ).length;
 
-      // Appris AUJOURD'HUI (Depuis 4h00 ce matin)
       learnedTodayCount = reviews.filter((r) => {
         const dateString = r.created_at || r.last_reviewed_at;
         if (!dateString) return false;
@@ -97,19 +92,13 @@ export default async function LanguageDashboard({ params }: Props) {
 
   const DAILY_GOAL = 10;
 
-  // Combien il reste de phrases dans la DB que je n'ai JAMAIS vues ?
   const trueUnlearnedRemaining = Math.max(
     0,
     totalSentencesCount - learnedCount
   );
 
-  // Combien il me reste à faire pour atteindre mon objectif de 10/jour ?
   const dailyQuotaRemaining = Math.max(0, DAILY_GOAL - learnedTodayCount);
-
-  // LE NOMBRE RÉEL DE NOUVELLES CARTES À CHARGER
   const newCardsToLearn = Math.min(dailyQuotaRemaining, trueUnlearnedRemaining);
-
-  // Taille de la session (Révisions + Nouveaux)
   const standardSessionCount = dueCount + newCardsToLearn;
 
   const canStartStandard = standardSessionCount > 0;
@@ -117,6 +106,12 @@ export default async function LanguageDashboard({ params }: Props) {
     dailyQuotaRemaining === 0 && dueCount === 0 && trueUnlearnedRemaining > 0;
   const isAllFinished = trueUnlearnedRemaining === 0 && dueCount === 0;
   const canStartFreeReview = learnedCount > 0;
+
+  // Calcul du pourcentage de progression globale
+  const globalProgressPercent =
+    totalSentencesCount > 0
+      ? Math.round((learnedCount / totalSentencesCount) * 100)
+      : 0;
 
   return (
     <div className="min-h-screen bg-slate-50 p-6 font-sans">
@@ -135,45 +130,67 @@ export default async function LanguageDashboard({ params }: Props) {
               Dashboard Médecine
             </p>
           </div>
-          <div className="flex gap-4 text-sm font-medium">
-            <Link href="/" className="text-slate-400 hover:text-indigo-600">
-              Langues
-            </Link>
-            <Link
-              href="/admin"
-              className="text-slate-400 hover:text-indigo-600"
-            >
-              Admin
-            </Link>
+          <div className="flex flex-col items-end gap-3">
+            <div className="flex gap-4 text-sm font-medium">
+              <Link href="/" className="text-slate-400 hover:text-indigo-600">
+                Langues
+              </Link>
+              <Link
+                href="/admin"
+                className="text-slate-400 hover:text-indigo-600"
+              >
+                Admin
+              </Link>
+            </div>
+            {/* Toggle de Lecture Automatique */}
+            <AutoTTSToggle initialValue={isAutoTTS} />
           </div>
         </header>
 
         {/* Bloc Principal */}
         <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-200 text-center space-y-6">
-          <div className="space-y-2">
-            <h2 className="text-xl font-semibold text-slate-900">
-              Objectif du jour
-            </h2>
+          {/* Section Objectifs et Progression */}
+          <div className="space-y-5">
+            {/* Objectif du jour */}
+            <div className="space-y-2">
+              <h2 className="text-xl font-semibold text-slate-900">
+                Objectif du jour
+              </h2>
+              <div className="relative pt-1">
+                <div className="flex mb-2 items-center justify-between">
+                  <span className="text-xs font-semibold inline-block py-1 px-2 uppercase rounded-full text-indigo-600 bg-indigo-200">
+                    {learnedTodayCount} / {DAILY_GOAL}
+                  </span>
+                </div>
+                <div className="overflow-hidden h-2 text-xs flex rounded bg-indigo-100">
+                  <div
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        (learnedTodayCount / DAILY_GOAL) * 100
+                      )}%`,
+                    }}
+                    className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-indigo-500 transition-all duration-500"
+                  ></div>
+                </div>
+              </div>
+            </div>
 
-            {/* Barre de progression */}
-            <div className="relative pt-1">
+            {/* Progression Globale */}
+            <div className="pt-4 border-t border-slate-100 text-left">
               <div className="flex mb-2 items-center justify-between">
-                <span className="text-xs font-semibold inline-block py-1 px-2 uppercase rounded-full text-indigo-600 bg-indigo-200">
-                  {learnedTodayCount} / {DAILY_GOAL}
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  Progression globale
                 </span>
-                <span className="text-xs font-bold text-slate-400">
-                  Total Base : {totalSentencesCount}
+                <span className="text-xs font-bold text-green-600">
+                  {learnedCount} / {totalSentencesCount} mots (
+                  {globalProgressPercent}%)
                 </span>
               </div>
-              <div className="overflow-hidden h-2 mb-4 text-xs flex rounded bg-indigo-100">
+              <div className="overflow-hidden h-2 text-xs flex rounded bg-slate-100">
                 <div
-                  style={{
-                    width: `${Math.min(
-                      100,
-                      (learnedTodayCount / DAILY_GOAL) * 100
-                    )}%`,
-                  }}
-                  className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-indigo-500 transition-all duration-500"
+                  style={{ width: `${globalProgressPercent}%` }}
+                  className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-green-500 transition-all duration-500"
                 ></div>
               </div>
             </div>

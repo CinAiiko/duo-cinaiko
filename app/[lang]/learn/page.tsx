@@ -19,8 +19,10 @@ export default function LearnPage() {
 
   const isFreeMode = mode === "review-all";
 
-  const [cards, setCards] = useState<any[]>([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  // --- NOUVEAU SYSTÈME DE FILE D'ATTENTE TEMPORELLE ---
+  const [queue, setQueue] = useState<any[]>([]);
+  const [currentCard, setCurrentCard] = useState<any>(null);
+  const [stats, setStats] = useState({ initial: 0, completed: 0 });
   const [isLoading, setIsLoading] = useState(true);
 
   const [input, setInput] = useState("");
@@ -34,7 +36,16 @@ export default function LearnPage() {
     const loadData = async () => {
       // @ts-ignore
       const data = await getSession(lang as string, mode);
-      setCards(data);
+      if (data && data.length > 0) {
+        // Initialisation de toutes les cartes comme "non vues"
+        const activeQueue = data.map((c: any) => ({ ...c, status: "unseen" }));
+        setStats({ initial: data.length, completed: 0 });
+
+        // On sort la toute première carte
+        const firstCard = activeQueue.shift();
+        setQueue(activeQueue);
+        setCurrentCard(firstCard);
+      }
       setIsLoading(false);
     };
     loadData();
@@ -46,7 +57,176 @@ export default function LearnPage() {
     } else if (status !== "idle") {
       setTimeout(() => nextButtonRef.current?.focus(), 50);
     }
-  }, [status, isLoading, currentIndex]);
+  }, [status, isLoading, currentCard]);
+
+  // --- FONCTION MOTEUR : Trouve la prochaine carte selon le temps ---
+  const getNextState = (currentQueue: any[]) => {
+    if (currentQueue.length === 0) return { nextCard: null, newQueue: [] };
+
+    const now = Date.now();
+    const q = [...currentQueue];
+
+    // 1. Priorité absolue : Les cartes en cours d'apprentissage dont le délai (1m ou 10m) est écoulé
+    const dueLearning = q
+      .filter((c) => c.status === "learning" && c.dueTime <= now)
+      .sort((a, b) => a.dueTime - b.dueTime);
+
+    if (dueLearning.length > 0) {
+      const next = dueLearning[0];
+      return { nextCard: next, newQueue: q.filter((c) => c !== next) };
+    }
+
+    // 2. Sinon : Une carte non vue de la session (Nouveau mot ou Révision du jour)
+    const unseenIdx = q.findIndex((c) => c.status === "unseen");
+    if (unseenIdx !== -1) {
+      const next = q[unseenIdx];
+      q.splice(unseenIdx, 1);
+      return { nextCard: next, newQueue: q };
+    }
+
+    // 3. Enfin : S'il n'y a plus de cartes neuves, mais qu'on attend les 10 min d'une carte,
+    // on ne bloque pas l'utilisateur, on avance le temps et on lui donne la prochaine.
+    const futureLearning = q.sort((a, b) => a.dueTime - b.dueTime);
+    const next = futureLearning[0];
+    return { nextCard: next, newQueue: q.filter((c) => c !== next) };
+  };
+
+  // --- LOGIQUE CORE : DOUBLE VALIDATION TEMPORELLE ---
+  const processResult = async (isCorrect: boolean) => {
+    const isAutoTTS =
+      document.cookie
+        .split("; ")
+        .find((row) => row.startsWith("autoTTS="))
+        ?.split("=")[1] === "true";
+    if (isAutoTTS) {
+      speak(currentCard.content_raw, lang as string);
+    }
+
+    let updatedQueue = [...queue];
+    let isFinishedForToday = false;
+
+    if (isFreeMode) {
+      if (!isCorrect) {
+        setStatus("error");
+        setFeedbackMsg("Oups ! On la revoit dans ~1 minute.");
+        updatedQueue.push({
+          ...currentCard,
+          status: "learning",
+          dueTime: Date.now() + 60 * 1000, // + 1 minute
+          isRetry: true,
+        });
+      } else {
+        setStatus("success");
+        setFeedbackMsg("Bien joué !");
+        isFinishedForToday = true;
+      }
+    } else {
+      // MODE STANDARD / BONUS
+      if (!isCorrect) {
+        setStatus("error");
+        setFeedbackMsg("Aïe. On la revoit dans ~1 minute.");
+        updatedQueue.push({
+          ...currentCard,
+          status: "learning",
+          dueTime: Date.now() + 60 * 1000, // + 1 minute
+          learningStep: 0,
+          isRetry: true,
+        });
+      } else {
+        setStatus("success");
+        if (currentCard.type === "new") {
+          const currentStep = currentCard.learningStep || 0;
+          if (currentStep === 0) {
+            setFeedbackMsg("Bien ! On confirme ça dans ~10 minutes.");
+            updatedQueue.push({
+              ...currentCard,
+              status: "learning",
+              dueTime: Date.now() + 10 * 60 * 1000, // + 10 minutes
+              learningStep: 1,
+              isRetry: true,
+            });
+          } else {
+            setFeedbackMsg("Parfait ! Mot acquis pour aujourd'hui.");
+            isFinishedForToday = true;
+          }
+        } else {
+          setFeedbackMsg("Excellent ! Révision validée.");
+          isFinishedForToday = true;
+        }
+      }
+    }
+
+    setQueue(updatedQueue); // On met à jour la file d'attente en arrière-plan
+
+    if (isFinishedForToday) {
+      setStats((s) => ({ ...s, completed: s.completed + 1 }));
+
+      if (!isFreeMode) {
+        // Sauvegarde DB
+        let result;
+        if (currentCard.isRetry || currentCard.learningStep === 1) {
+          // @ts-ignore
+          result = await saveResult(
+            currentCard.review_id,
+            currentCard.id,
+            true,
+            0
+          );
+        } else {
+          // @ts-ignore
+          result = await saveResult(
+            currentCard.review_id,
+            currentCard.id,
+            true,
+            currentCard.interval
+          );
+        }
+        if (result && !result.success) {
+          console.error("Erreur sauvegarde :", result.error);
+        }
+      }
+    }
+  };
+
+  const handleSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (status !== "idle") return;
+    const isCorrect =
+      input.trim().toLowerCase() ===
+      currentCard.answer_target.trim().toLowerCase();
+    processResult(isCorrect);
+  };
+
+  const handleGiveUp = () => {
+    if (status !== "idle") return;
+    setInput("");
+    processResult(false);
+  };
+
+  const handleNext = () => {
+    setFeedbackMsg("");
+    const { nextCard, newQueue } = getNextState(queue);
+    setCurrentCard(nextCard);
+    setQueue(newQueue);
+    setInput("");
+    setStatus("idle");
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (status === "idle" && e.key === "Enter") {
+      handleSubmit();
+      return;
+    }
+    if (status !== "idle" && e.key === " ") {
+      e.preventDefault();
+      handleNext();
+    }
+  };
+
+  const preventBlur = (e: React.MouseEvent) => {
+    e.preventDefault();
+  };
 
   if (isLoading)
     return (
@@ -55,7 +235,8 @@ export default function LearnPage() {
       </div>
     );
 
-  if (!isLoading && cards.length === 0) {
+  // Fin de session
+  if (!isLoading && !currentCard) {
     return (
       <div className="min-h-[100dvh] flex flex-col items-center justify-center p-8 bg-slate-50 text-center">
         <div className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full border border-slate-100">
@@ -78,187 +259,38 @@ export default function LearnPage() {
     );
   }
 
-  const currentCard = cards[currentIndex];
-
-  // --- LOGIQUE CORE : DOUBLE VALIDATION ---
-  const processResult = async (isCorrect: boolean) => {
-    // A. MODE ENTRAÎNEMENT (Pas de sauvegarde, juste la mécanique de boucle)
-    if (isFreeMode) {
-      if (!isCorrect) {
-        setStatus("error");
-        setFeedbackMsg("Oups ! On la revoit dans 1 minute.");
-        const nextQueue = [...cards];
-        // On réinsère à +3
-        const retryCard = { ...currentCard, isRetry: true };
-        const insertIndex = Math.min(currentIndex + 3, nextQueue.length);
-        nextQueue.splice(insertIndex, 0, retryCard);
-        setCards(nextQueue);
-      } else {
-        setStatus("success");
-        setFeedbackMsg("Bien joué !");
-      }
-      return;
-    }
-
-    // B. MODE APPRENTISSAGE (Standard / Bonus)
-    const nextQueue = [...cards];
-
-    // --- CAS 1 : ÉCHEC (Mauvaise réponse ou "Je ne sais pas") ---
-    if (!isCorrect) {
-      setStatus("error");
-      setFeedbackMsg("Aïe. On reprend depuis le début dans 1 minute.");
-
-      // On remet la carte à l'étape 0 (même si elle était à l'étape 1)
-      const retryCard = {
-        ...currentCard,
-        isRetry: true,
-        learningStep: 0, // RETOUR À LA CASE DÉPART
-      };
-
-      // Insertion proche (+3 cartes)
-      const insertIndex = Math.min(currentIndex + 3, nextQueue.length);
-      nextQueue.splice(insertIndex, 0, retryCard);
-
-      setCards(nextQueue);
-      // On ne sauvegarde rien
-      return;
-    }
-
-    // --- CAS 2 : SUCCÈS ---
-    setStatus("success");
-
-    // Est-ce un "Nouveau Mot" ?
-    if (currentCard.type === "new") {
-      const currentStep = currentCard.learningStep || 0; // 0 par défaut
-
-      if (currentStep === 0) {
-        // ÉTAPE 1 RÉUSSIE -> Passage à l'Étape 2
-        setFeedbackMsg("Bien ! Encore une fois tout à l'heure pour confirmer.");
-
-        const step1Card = {
-          ...currentCard,
-          isRetry: true, // On la considère comme "en cours"
-          learningStep: 1, // On passe à l'étape 1
-        };
-
-        // Insertion moyenne (+5 cartes) pour laisser un peu de temps
-        const insertIndex = Math.min(currentIndex + 5, nextQueue.length);
-        nextQueue.splice(insertIndex, 0, step1Card);
-
-        setCards(nextQueue);
-        // PAS DE SAUVEGARDE DB ICI
-        return;
-      } else if (currentStep === 1) {
-        // ÉTAPE 2 RÉUSSIE -> VALIDATION FINALE
-        setFeedbackMsg("Parfait ! Mot acquis pour aujourd'hui.");
-        // On laisse couler vers la sauvegarde en bas...
-      }
-    } else {
-      // C'est une RÉVISION (Review)
-      setFeedbackMsg("Excellent !");
-      // Si c'était un "Retry" d'une révision ratée, on valide maintenant.
-    }
-
-    // --- SAUVEGARDE EN BASE DE DONNÉES ---
-    // On arrive ici seulement si :
-    // 1. C'est un Nouveau Mot validé 2 fois (Step 1 -> Success)
-    // 2. C'est une Révision réussie (Step n/a)
-
-    let result = { success: true, error: "" };
-
-    // Si c'était une carte "en cours" (isRetry ou Step 1), on la valide pour demain (interval 0 dans la logique saveResult mettra à demain)
-    if (currentCard.isRetry || currentCard.learningStep === 1) {
-      // @ts-ignore
-      result = await saveResult(currentCard.review_id, currentCard.id, true, 0);
-    } else {
-      // Révision normale réussie du premier coup
-      // @ts-ignore
-      result = await saveResult(
-        currentCard.review_id,
-        currentCard.id,
-        true,
-        currentCard.interval
-      );
-    }
-
-    if (result && !result.success) {
-      console.error("Erreur sauvegarde :", result.error);
-    }
-  };
-
-  const handleSubmit = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (status !== "idle") return;
-    const isCorrect =
-      input.trim().toLowerCase() ===
-      currentCard.answer_target.trim().toLowerCase();
-    processResult(isCorrect);
-  };
-
-  const handleGiveUp = () => {
-    if (status !== "idle") return;
-    setInput("");
-    processResult(false);
-  };
-
-  const handleNext = () => {
-    setFeedbackMsg("");
-
-    if (currentIndex < cards.length - 1) {
-      setCurrentIndex((prev) => prev + 1);
-      setInput("");
-      setStatus("idle");
-      // Force focus mobile
-      setTimeout(() => inputRef.current?.focus(), 0);
-    } else {
-      router.push(`/${lang}`);
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (status === "idle" && e.key === "Enter") {
-      handleSubmit();
-      return;
-    }
-    if (status !== "idle" && e.key === " ") {
-      e.preventDefault();
-      handleNext();
-    }
-  };
-
-  // Empêche le bouton de voler le focus au clic
-  const preventBlur = (e: React.MouseEvent) => {
-    e.preventDefault();
-  };
-
   const textParts = currentCard.display_text.split("...");
 
   return (
     <div className="min-h-[100dvh] bg-slate-100 flex flex-col items-center justify-start md:justify-center pt-6 md:pt-0 pb-10 p-4 font-sans overflow-y-auto">
+      {/* HEADER DE PROGRESSION */}
       <div className="w-full max-w-xl mb-4 flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest shrink-0">
-        <span>
-          Carte {currentIndex + 1} / {cards.length}
-        </span>
+        <div className="flex flex-col">
+          <span>
+            Validées : {stats.completed} / {stats.initial}
+          </span>
+          <span className="text-[10px] text-slate-300 normal-case mt-0.5">
+            File d'attente : {queue.length + 1}
+          </span>
+        </div>
+
         {isFreeMode ? (
           <span className="px-2 py-1 rounded-md bg-purple-100 text-purple-600 border border-purple-200">
             Mode Entraînement
           </span>
-        ) : // Affichage intelligent du badge
-        currentCard.type === "new" ? (
-          // Si c'est un nouveau mot
+        ) : currentCard.status === "learning" ? (
           currentCard.learningStep === 1 ? (
             <span className="px-2 py-1 rounded-md bg-yellow-100 text-yellow-700 animate-pulse border border-yellow-200">
-              Confirmation (2/2)
+              Confirmation (10m)
             </span>
           ) : (
-            <span className="px-2 py-1 rounded-md bg-blue-100 text-blue-600">
-              Nouveau (1/2)
+            <span className="px-2 py-1 rounded-md bg-red-100 text-red-600 animate-pulse">
+              À revoir (1m)
             </span>
           )
-        ) : // Si c'est une révision
-        currentCard.isRetry ? (
-          <span className="px-2 py-1 rounded-md bg-red-100 text-red-600 animate-pulse">
-            Répétition
+        ) : currentCard.type === "new" ? (
+          <span className="px-2 py-1 rounded-md bg-blue-100 text-blue-600">
+            Nouveau
           </span>
         ) : (
           <span className="px-2 py-1 rounded-md bg-orange-100 text-orange-600">
@@ -267,6 +299,7 @@ export default function LearnPage() {
         )}
       </div>
 
+      {/* CARTE PRINCIPALE */}
       <div
         className={`
         w-full max-w-xl bg-white rounded-3xl shadow-xl overflow-hidden transition-all duration-300 border-2 relative shrink-0

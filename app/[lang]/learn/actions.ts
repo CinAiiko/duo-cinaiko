@@ -212,33 +212,50 @@ export async function saveResult(
   } = await supabase.auth.getUser();
   if (!user) return { success: false, error: "Utilisateur non connecté" };
 
-  let nextInterval = 1;
-  let easeFactor = 2.5;
-  const nextDate = new Date();
-
-  if (isCorrect) {
-    if (currentInterval === 0) nextInterval = 1;
-    else if (currentInterval === 1) nextInterval = 3;
-    else nextInterval = Math.round(currentInterval * easeFactor);
-
-    nextDate.setDate(nextDate.getDate() + nextInterval);
-  } else {
-    nextInterval = 1;
-  }
-
+  // 1. ON RÉCUPÈRE D'ABORD LA CARTE POUR LIRE SON EASE FACTOR ACTUEL
   const { data: existingReview, error: fetchError } = await supabase
     .from("reviews")
-    .select("id")
+    .select("id, ease_factor")
     .eq("user_id", user.id)
     .eq("sentence_id", sentence_id)
     .maybeSingle();
 
   if (fetchError) return { success: false, error: fetchError.message };
 
+  // 2. INITIALISATION DES VARIABLES
+  // S'il n'y a pas d'historique, on part sur la valeur par défaut de 2.5
+  let currentEase = existingReview?.ease_factor
+    ? existingReview.ease_factor
+    : 2.5;
+  let nextInterval = 1;
+
+  // 3. CALCULS DYNAMIQUES DE L'INTERVALLE ET DE L'EASE FACTOR
+  if (isCorrect) {
+    // Calcul de l'intervalle
+    if (currentInterval === 0) nextInterval = 1;
+    else if (currentInterval === 1) nextInterval = 3;
+    else nextInterval = Math.max(1, Math.round(currentInterval * currentEase));
+
+    // Bonus de facilité : La carte est plus facile qu'avant (+0.1)
+    // On met un plafond (max) à 3.0 pour éviter des intervalles absurdes au bout de 10 réussites.
+    currentEase = Math.min(3.0, currentEase + 0.1);
+  } else {
+    // L'intervalle retombe à 1 jour (tu peux aussi tester currentInterval * 0.5 si tu trouves ça trop punitif)
+    nextInterval = 1;
+
+    // Malus de facilité : La carte est difficile (-0.2)
+    // On met un plancher (min) à 1.3 (Règle d'or de SuperMemo pour éviter l'"Ease Hell")
+    currentEase = Math.max(1.3, currentEase - 0.2);
+  }
+
+  // 4. PRÉPARATION DE LA SAUVEGARDE
+  const nextDate = new Date();
+  nextDate.setDate(nextDate.getDate() + nextInterval);
+
   const payload = {
     next_review_date: nextDate.toISOString(),
     interval: nextInterval,
-    ease_factor: easeFactor,
+    ease_factor: Number(currentEase.toFixed(2)), // On arrondit à 2 décimales (ex: 2.60)
     last_reviewed_at: new Date().toISOString(),
   };
 
