@@ -54,24 +54,24 @@ export default async function LanguageDashboard({ params }: Props) {
 
   // --- 2. RÉCUPÉRATION DES DONNÉES ---
 
-  const { data: sentences } = await supabase
-    .from("sentences")
+  const { data: langWords } = await supabase
+    .from("words")
     .select("id")
     .eq("language_code", lang);
 
-  const sentenceIds = sentences?.map((s) => s.id) || [];
-  const totalSentencesCount = sentenceIds.length;
+  const langWordIds = langWords?.map((w) => w.id) || [];
+  const totalWordsCount = langWordIds.length;
 
   let learnedCount = 0;
   let dueCount = 0;
   let learnedTodayCount = 0;
 
-  if (sentenceIds.length > 0) {
+  if (langWordIds.length > 0) {
     const { data: reviews } = await supabase
-      .from("reviews")
+      .from("word_reviews")
       .select("next_review_date, created_at, last_reviewed_at")
       .eq("user_id", user.id)
-      .in("sentence_id", sentenceIds);
+      .in("word_id", langWordIds);
 
     if (reviews) {
       learnedCount = reviews.length;
@@ -94,7 +94,7 @@ export default async function LanguageDashboard({ params }: Props) {
 
   const trueUnlearnedRemaining = Math.max(
     0,
-    totalSentencesCount - learnedCount
+    totalWordsCount - learnedCount
   );
 
   const dailyQuotaRemaining = Math.max(0, DAILY_GOAL - learnedTodayCount);
@@ -109,8 +109,8 @@ export default async function LanguageDashboard({ params }: Props) {
 
   // Calcul du pourcentage de progression globale
   const globalProgressPercent =
-    totalSentencesCount > 0
-      ? Math.round((learnedCount / totalSentencesCount) * 100)
+    totalWordsCount > 0
+      ? Math.round((learnedCount / totalWordsCount) * 100)
       : 0;
 
   return (
@@ -183,8 +183,7 @@ export default async function LanguageDashboard({ params }: Props) {
                   Progression globale
                 </span>
                 <span className="text-xs font-bold text-green-600">
-                  {learnedCount} / {totalSentencesCount} mots (
-                  {globalProgressPercent}%)
+                  {learnedCount} / {totalWordsCount} mots ({globalProgressPercent}%)
                 </span>
               </div>
               <div className="overflow-hidden h-2 text-xs flex rounded bg-slate-100">

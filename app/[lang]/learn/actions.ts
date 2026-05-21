@@ -2,6 +2,7 @@
 
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { calculateFSRS } from "../../utils/fsrs";
 
 // Fonction utilitaire pour mélanger un tableau (Fisher-Yates)
 function shuffleArray(array: any[]) {
@@ -10,6 +11,37 @@ function shuffleArray(array: any[]) {
     [array[i], array[j]] = [array[j], array[i]];
   }
   return array;
+}
+
+// Fonction pour choisir une phrase au hasard pour chaque mot
+function pickRandomSentencePerWord(words: any[], sentences: any[], reviews: any[] = []) {
+  const result: any[] = [];
+  for (const word of words) {
+    const wordSentences = sentences.filter(s => s.word_id === word.id);
+    if (wordSentences.length > 0) {
+      const randomSentence = wordSentences[Math.floor(Math.random() * wordSentences.length)];
+      const review = reviews.find(r => r.word_id === word.id) || {};
+      result.push({
+        ...randomSentence,
+        // on attache les infos du mot pour l'affichage si besoin
+        target_word: word.word,
+        part_of_speech: word.part_of_speech,
+        grammar_notes: word.grammar_notes,
+        lemma: word.lemma,
+        prefix: word.prefix,
+        suffix: word.suffix,
+        radical: word.radical,
+        word_id: word.id,
+        // on propage les variables FSRS
+        stability: review.stability || 0,
+        difficulty: review.difficulty || 0,
+        state: review.state || 0,
+        last_reviewed_at: review.last_reviewed_at || null,
+        interval: review.interval || 0,
+      });
+    }
+  }
+  return result;
 }
 
 // --- 1. RÉCUPÉRATION DE LA SESSION ---
@@ -23,70 +55,57 @@ export async function getSession(
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll() {
-          return cookieStore.getAll();
-        },
+        getAll() { return cookieStore.getAll(); },
         setAll() {},
       },
     }
   );
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { data: { user } } = await supabase.auth.getUser();
   if (!user) return [];
 
-  // A. IDs des phrases de cette langue
-  const { data: langSentences } = await supabase
-    .from("sentences")
-    .select("id")
+  // A. IDs des mots de cette langue
+  const { data: langWords } = await supabase
+    .from("words")
+    .select("*")
     .eq("language_code", lang);
 
-  const langSentenceIds = langSentences?.map((s) => s.id) || [];
-  if (langSentenceIds.length === 0) return [];
+  const langWordIds = langWords?.map((w) => w.id) || [];
+  if (langWordIds.length === 0) return [];
+
+  // On récupère toutes les phrases de cette langue en une fois pour la sélection aléatoire
+  const { data: allSentences } = await supabase
+    .from("sentences")
+    .select("*")
+    .eq("language_code", lang);
+
+  const sentences = allSentences || [];
 
   // --- MODE RÉVISION LIBRE (REVIEW-ALL) ---
   if (mode === "review-all") {
-    // 1. On récupère TOUT l'historique
     const { data: allReviews } = await supabase
-      .from("reviews")
-      .select("sentence_id, interval, ease_factor, created_at")
+      .from("word_reviews")
+      .select("*")
       .eq("user_id", user.id)
-      .in("sentence_id", langSentenceIds);
+      .in("word_id", langWordIds);
 
     if (!allReviews || allReviews.length === 0) return [];
 
-    // 2. On mélange TOUT l'historique et on en garde 20
     const selectedReviews = shuffleArray([...allReviews]).slice(0, 20);
-    const reviewIds = selectedReviews.map((r) => r.sentence_id);
+    const reviewWordIds = selectedReviews.map((r) => r.word_id);
 
-    // 3. On récupère le contenu des phrases
-    const { data: sentences } = await supabase
-      .from("sentences")
-      .select("*")
-      .in("id", reviewIds);
+    const selectedWords = langWords!.filter(w => reviewWordIds.includes(w.id));
+    
+    let finalCards = pickRandomSentencePerWord(selectedWords, sentences, selectedReviews);
+    finalCards = finalCards.map(c => ({ ...c, type: "review", mode: "free" }));
 
-    // 4. On combine les données
-    const finalCards =
-      sentences?.map((s) => ({
-        ...s,
-        type: "review",
-        mode: "free",
-        ...selectedReviews.find((r) => r.sentence_id === s.id),
-      })) || [];
-
-    // 5. IMPORTANT : On remélange le résultat final pour l'affichage
-    // (Car l'étape 3 peut avoir renvoyé les phrases triées par ID)
     return shuffleArray(finalCards);
   }
 
   // --- MODES CLASSIQUES (Standard / Bonus) ---
-
-  // B. Révisions dues
   let reviewsDue: any[] = [];
 
   if (mode === "standard") {
-    // Logique "Night Owl" (Jusqu'à demain 4h00)
     const today = new Date();
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
@@ -94,27 +113,18 @@ export async function getSession(
     const cutoffDate = tomorrow.toISOString();
 
     const { data: reviews } = await supabase
-      .from("reviews")
-      .select("sentence_id, interval, ease_factor, created_at")
+      .from("word_reviews")
+      .select("*")
       .eq("user_id", user.id)
-      .in("sentence_id", langSentenceIds)
+      .in("word_id", langWordIds)
       .lte("next_review_date", cutoffDate);
 
     if (reviews && reviews.length > 0) {
-      const reviewIds = reviews.map((r) => r.sentence_id);
-      const { data: sentences } = await supabase
-        .from("sentences")
-        .select("*")
-        .in("id", reviewIds);
-
-      reviewsDue =
-        sentences?.map((s) => ({
-          ...s,
-          type: "review",
-          ...reviews.find((r) => r.sentence_id === s.id),
-        })) || [];
-
-      // On mélange les révisions pour ne pas avoir un ordre prévisible
+      const reviewWordIds = reviews.map((r) => r.word_id);
+      const selectedWords = langWords!.filter(w => reviewWordIds.includes(w.id));
+      
+      reviewsDue = pickRandomSentencePerWord(selectedWords, sentences, reviews);
+      reviewsDue = reviewsDue.map(c => ({ ...c, type: "review" }));
       reviewsDue = shuffleArray(reviewsDue);
     }
   }
@@ -124,7 +134,6 @@ export async function getSession(
   if (mode === "bonus") {
     newCardsLimit = 10;
   } else {
-    // Calcul précis avec règle des 4h du matin pour la journée en cours
     const currentVirtualDayStart = new Date();
     if (currentVirtualDayStart.getHours() < 4) {
       currentVirtualDayStart.setDate(currentVirtualDayStart.getDate() - 1);
@@ -132,66 +141,48 @@ export async function getSession(
     currentVirtualDayStart.setHours(4, 0, 0, 0);
 
     const { data: todaysReviews } = await supabase
-      .from("reviews")
+      .from("word_reviews")
       .select("created_at, last_reviewed_at")
       .eq("user_id", user.id)
-      .in("sentence_id", langSentenceIds);
+      .in("word_id", langWordIds);
 
-    const learnedToday =
-      todaysReviews?.filter((r) => {
-        const d = r.created_at || r.last_reviewed_at;
-        return d && new Date(d) >= currentVirtualDayStart;
-      }).length || 0;
+    const learnedToday = todaysReviews?.filter((r) => {
+      const d = r.created_at || r.last_reviewed_at;
+      return d && new Date(d) >= currentVirtualDayStart;
+    }).length || 0;
 
     const DAILY_GOAL = 10;
     newCardsLimit = Math.max(0, DAILY_GOAL - learnedToday);
   }
 
-  // D. Récupération Nouvelles Cartes (Priorité Ordre Logique + Mélange)
+  // D. Récupération Nouvelles Cartes
   let newCards: any[] = [];
   if (newCardsLimit > 0) {
     const { data: learnedData } = await supabase
-      .from("reviews")
-      .select("sentence_id")
+      .from("word_reviews")
+      .select("word_id")
       .eq("user_id", user.id)
-      .in("sentence_id", langSentenceIds);
+      .in("word_id", langWordIds);
 
-    const learnedIds = learnedData?.map((r) => r.sentence_id) || [];
+    const learnedIds = learnedData?.map((r) => r.word_id) || [];
 
-    let query = supabase
-      .from("sentences")
-      .select("*")
-      .eq("language_code", lang)
-      // MODIFICATION ICI : Tri par external_id pour suivre l'ordre logique (en-01, en-02...)
-      .order("external_id", { ascending: true });
-
-    if (learnedIds.length > 0) {
-      // Exclut les phrases déjà apprises (ce qui permet de combler les "trous")
-      query = query.not("id", "in", `(${learnedIds.join(",")})`);
+    const unlearnedWords = langWords!.filter(w => !learnedIds.includes(w.id));
+    // Tri optionnel si on veut un ordre, sinon on prend les N premiers
+    const selectedNewWords = unlearnedWords.slice(0, newCardsLimit);
+    if (selectedNewWords.length > 0) {
+      newCards = pickRandomSentencePerWord(selectedNewWords, sentences);
+      newCards = shuffleArray(newCards).map(c => ({ ...c, type: "new", interval: 0 }));
     }
-
-    const { data: sentences } = await query.limit(newCardsLimit);
-
-    // Mélange pour l'affichage (optionnel, mais garde la session variée si on en apprend plusieurs)
-    const shuffledSentences = sentences ? shuffleArray(sentences) : [];
-
-    newCards = shuffledSentences.map((s) => ({
-      ...s,
-      type: "new",
-      interval: 0,
-    }));
   }
 
-  // On retourne le tout (Révisions d'abord, puis Nouveaux)
-  return [...reviewsDue, ...newCards];
+  return shuffleArray([...reviewsDue, ...newCards]);
 }
 
 // --- 2. SAUVEGARDE DU RÉSULTAT ---
 export async function saveResult(
-  review_id: string | null,
+  word_id: string,
   sentence_id: string,
-  isCorrect: boolean,
-  currentInterval: number
+  rating: number // 1: Again, 2: Hard, 3: Good, 4: Easy
 ) {
   const cookieStore = await cookies();
   const supabase = createServerClient(
@@ -199,63 +190,45 @@ export async function saveResult(
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll() {
-          return cookieStore.getAll();
-        },
+        getAll() { return cookieStore.getAll(); },
         setAll() {},
       },
     }
   );
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { success: false, error: "Utilisateur non connecté" };
 
-  // 1. ON RÉCUPÈRE D'ABORD LA CARTE POUR LIRE SON EASE FACTOR ACTUEL
+  // 1. Sauvegarde de l'historique de la phrase
+  await supabase.from("review_logs").insert({
+    user_id: user.id,
+    word_id: word_id,
+    sentence_id: sentence_id,
+    is_correct: rating >= 2
+  });
+
+  // 2. Récupération pour SRS du mot (on récupère toutes les colonnes FSRS)
   const { data: existingReview, error: fetchError } = await supabase
-    .from("reviews")
-    .select("id, ease_factor")
+    .from("word_reviews")
+    .select("id, stability, difficulty, state, last_reviewed_at")
     .eq("user_id", user.id)
-    .eq("sentence_id", sentence_id)
+    .eq("word_id", word_id)
     .maybeSingle();
 
   if (fetchError) return { success: false, error: fetchError.message };
 
-  // 2. INITIALISATION DES VARIABLES
-  // S'il n'y a pas d'historique, on part sur la valeur par défaut de 2.5
-  let currentEase = existingReview?.ease_factor
-    ? existingReview.ease_factor
-    : 2.5;
-  let nextInterval = 1;
+  // 3. Calcul FSRS
+  const fsrs = calculateFSRS(rating, existingReview);
 
-  // 3. CALCULS DYNAMIQUES DE L'INTERVALLE ET DE L'EASE FACTOR
-  if (isCorrect) {
-    // Calcul de l'intervalle
-    if (currentInterval === 0) nextInterval = 1;
-    else if (currentInterval === 1) nextInterval = 3;
-    else nextInterval = Math.max(1, Math.round(currentInterval * currentEase));
-
-    // Bonus de facilité : La carte est plus facile qu'avant (+0.1)
-    // On met un plafond (max) à 3.0 pour éviter des intervalles absurdes au bout de 10 réussites.
-    currentEase = Math.min(3.0, currentEase + 0.1);
-  } else {
-    // L'intervalle retombe à 1 jour (tu peux aussi tester currentInterval * 0.5 si tu trouves ça trop punitif)
-    nextInterval = 1;
-
-    // Malus de facilité : La carte est difficile (-0.2)
-    // On met un plancher (min) à 1.3 (Règle d'or de SuperMemo pour éviter l'"Ease Hell")
-    currentEase = Math.max(1.3, currentEase - 0.2);
-  }
-
-  // 4. PRÉPARATION DE LA SAUVEGARDE
   const nextDate = new Date();
-  nextDate.setDate(nextDate.getDate() + nextInterval);
+  nextDate.setDate(nextDate.getDate() + fsrs.interval);
 
   const payload = {
     next_review_date: nextDate.toISOString(),
-    interval: nextInterval,
-    ease_factor: Number(currentEase.toFixed(2)), // On arrondit à 2 décimales (ex: 2.60)
+    interval: fsrs.interval,
+    stability: fsrs.stability,
+    difficulty: fsrs.difficulty,
+    state: fsrs.state,
     last_reviewed_at: new Date().toISOString(),
   };
 
@@ -263,14 +236,14 @@ export async function saveResult(
 
   if (existingReview) {
     const { error } = await supabase
-      .from("reviews")
+      .from("word_reviews")
       .update(payload)
       .eq("id", existingReview.id);
     saveError = error;
   } else {
     const { error } = await supabase
-      .from("reviews")
-      .insert({ user_id: user.id, sentence_id: sentence_id, ...payload });
+      .from("word_reviews")
+      .insert({ user_id: user.id, word_id: word_id, first_studied_at: new Date().toISOString(), ...payload });
     saveError = error;
   }
 

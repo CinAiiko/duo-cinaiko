@@ -5,6 +5,7 @@ import { getSession, saveResult } from "./actions";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { speak } from "@/app/utils/tts";
+import { calculateFSRS } from "../../utils/fsrs";
 
 export default function LearnPage() {
   const { lang } = useParams();
@@ -19,64 +20,80 @@ export default function LearnPage() {
 
   const isFreeMode = mode === "review-all";
 
-  // --- NOUVEAU SYSTÈME DE FILE D'ATTENTE TEMPORELLE ---
+  // --- MOTEUR DE FILE D'ATTENTE FSRS ---
   const [queue, setQueue] = useState<any[]>([]);
   const [currentCard, setCurrentCard] = useState<any>(null);
   const [stats, setStats] = useState({ initial: 0, completed: 0 });
   const [isLoading, setIsLoading] = useState(true);
 
   const [input, setInput] = useState("");
-  const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "success" | "error" | "synonym">("idle");
   const [feedbackMsg, setFeedbackMsg] = useState("");
 
   const inputRef = useRef<HTMLInputElement>(null);
   const nextButtonRef = useRef<HTMLButtonElement>(null);
 
+  // Charger les données de session au démarrage
   useEffect(() => {
     const loadData = async () => {
       // @ts-ignore
       const data = await getSession(lang as string, mode);
       if (data && data.length > 0) {
-        // Initialisation de toutes les cartes comme "non vues"
-        const activeQueue = data.map((c: any) => ({ ...c, status: "unseen" }));
+        // Initialiser toutes les cartes comme "non vues" (unseen)
+        const activeQueue = data.map((c: any) => ({
+          ...c,
+          status: "unseen",
+          learningStep: 0,
+          dueTime: 0,
+        }));
         setStats({ initial: data.length, completed: 0 });
 
-        // On sort la toute première carte
-        const firstCard = activeQueue.shift();
-        setQueue(activeQueue);
-        setCurrentCard(firstCard);
+        // Sortir la toute première carte de la file d'attente
+        const q = [...activeQueue];
+        const { nextCard, newQueue } = getNextState(q);
+        setCurrentCard(nextCard);
+        setQueue(newQueue);
       }
       setIsLoading(false);
     };
     loadData();
   }, [lang, mode]);
 
+  // Gérer le focus automatique
   useEffect(() => {
     if (!isLoading && status === "idle") {
       setTimeout(() => inputRef.current?.focus(), 100);
-    } else if (status !== "idle") {
-      setTimeout(() => nextButtonRef.current?.focus(), 50);
     }
   }, [status, isLoading, currentCard]);
 
-  // --- FONCTION MOTEUR : Trouve la prochaine carte selon le temps ---
+  // --- LOGIQUE D'ATTRIBUTION DES CARTES (QUEUE) ---
   const getNextState = (currentQueue: any[]) => {
     if (currentQueue.length === 0) return { nextCard: null, newQueue: [] };
 
     const now = Date.now();
     const q = [...currentQueue];
 
-    // 1. Priorité absolue : Les cartes en cours d'apprentissage dont le délai (1m ou 10m) est écoulé
-    const dueLearning = q
-      .filter((c) => c.status === "learning" && c.dueTime <= now)
+    // 1. Priorité absolue : Les cartes à revoir sous 1 min (learningStep === 0) qui sont dues
+    const dueUrgent = q
+      .filter((c) => c.status === "learning" && c.learningStep === 0 && c.dueTime <= now)
       .sort((a, b) => a.dueTime - b.dueTime);
 
-    if (dueLearning.length > 0) {
-      const next = dueLearning[0];
+    if (dueUrgent.length > 0) {
+      const next = dueUrgent[0];
       return { nextCard: next, newQueue: q.filter((c) => c !== next) };
     }
 
-    // 2. Sinon : Une carte non vue de la session (Nouveau mot ou Révision du jour)
+    // 2. Ensuite : Les cartes à revoir sous 10 min (learningStep === 1) qui sont dues
+    const dueNormal = q
+      .filter((c) => c.status === "learning" && c.learningStep === 1 && c.dueTime <= now)
+      .sort((a, b) => a.dueTime - b.dueTime);
+
+    if (dueNormal.length > 0) {
+      const next = dueNormal[0];
+      return { nextCard: next, newQueue: q.filter((c) => c !== next) };
+    }
+
+    // 3. Sinon : Les cartes non vues (unseen)
     const unseenIdx = q.findIndex((c) => c.status === "unseen");
     if (unseenIdx !== -1) {
       const next = q[unseenIdx];
@@ -84,173 +101,258 @@ export default function LearnPage() {
       return { nextCard: next, newQueue: q };
     }
 
-    // 3. Enfin : S'il n'y a plus de cartes neuves, mais qu'on attend les 10 min d'une carte,
-    // on ne bloque pas l'utilisateur, on avance le temps et on lui donne la prochaine.
-    const futureLearning = q.sort((a, b) => a.dueTime - b.dueTime);
-    const next = futureLearning[0];
-    return { nextCard: next, newQueue: q.filter((c) => c !== next) };
+    // 4. Si plus de cartes unseen ni dues, mais qu'il reste des cartes en apprentissage (learning)
+    // non encore dues, on les présente immédiatement pour finir la session
+    const remainingLearning = q
+      .filter((c) => c.status === "learning")
+      .sort((a, b) => {
+        if (a.learningStep !== b.learningStep) {
+          return a.learningStep - b.learningStep; // step 0 (1m) en premier
+        }
+        return a.dueTime - b.dueTime;
+      });
+
+    if (remainingLearning.length > 0) {
+      const next = remainingLearning[0];
+      return { nextCard: next, newQueue: q.filter((c) => c !== next) };
+    }
+
+    return { nextCard: null, newQueue: [] };
   };
 
-  // --- LOGIQUE CORE : DOUBLE VALIDATION TEMPORELLE ---
-  const processResult = async (isCorrect: boolean) => {
+  // --- ACTION DE GRADING (FSRS & RETRY LOOP) ---
+  const handleGrade = async (rating: number) => {
+    if (status !== "success" && status !== "error") return;
+
+    const isLearning = currentCard.status === "unseen" || currentCard.status === "learning";
+    let updatedQueue = [...queue];
+    let isGraduated = false;
+
+    if (isFreeMode) {
+      if (status === "error") {
+        updatedQueue.push({
+          ...currentCard,
+          status: "learning",
+          learningStep: 0,
+          dueTime: Date.now() + 60 * 1000, // revoir dans 1 minute
+        });
+      } else {
+        isGraduated = true;
+      }
+    } else {
+      // Mode standard / FSRS
+      if (rating === 1) {
+        // À revoir (Again) -> step 0 (1m)
+        updatedQueue.push({
+          ...currentCard,
+          status: "learning",
+          learningStep: 0,
+          dueTime: Date.now() + 60 * 1000,
+        });
+      } else if (rating === 2) {
+        // Difficile (Hard) -> step 1 (10m)
+        updatedQueue.push({
+          ...currentCard,
+          status: "learning",
+          learningStep: 1,
+          dueTime: Date.now() + 10 * 60 * 1000,
+        });
+      } else if (rating === 3) {
+        // Bien (Good)
+        if (isLearning && (currentCard.learningStep || 0) === 0) {
+          // Si premier passage ou étape 1m, on l'envoie à l'étape 10m
+          updatedQueue.push({
+            ...currentCard,
+            status: "learning",
+            learningStep: 1,
+            dueTime: Date.now() + 10 * 60 * 1000,
+          });
+        } else {
+          // Déjà validé l'étape 10m ou carte de révision -> Acquis !
+          isGraduated = true;
+        }
+      } else if (rating === 4) {
+        // Facile (Easy) -> Acquis immédiatement !
+        isGraduated = true;
+      }
+
+      // Enregistrer le résultat SRS en base de données
+      try {
+        const result = await saveResult(
+          currentCard.word_id,
+          currentCard.id,
+          rating
+        );
+        if (result && !result.success) {
+          console.error("Erreur sauvegarde FSRS :", result.error);
+        }
+      } catch (err) {
+        console.error("Erreur de connexion Supabase :", err);
+      }
+    }
+
+    if (isGraduated) {
+      setStats((s) => ({ ...s, completed: s.completed + 1 }));
+    }
+
+    setQueue(updatedQueue);
+
+    // Passer à la carte suivante
+    setFeedbackMsg("");
+    const { nextCard, newQueue } = getNextState(updatedQueue);
+    setCurrentCard(nextCard);
+    setQueue(newQueue);
+    setInput("");
+    setStatus("idle");
+  };
+
+  // --- SUBMIT DU CHAMP SAISIE ---
+  const handleSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (status !== "idle" && status !== "synonym") return;
+
+    const cleanedInput = input.trim().toLowerCase();
+    const target = currentCard.answer_target.trim().toLowerCase();
+    const synonyms = currentCard.contextual_synonyms || [];
+    const cleanedSynonyms = synonyms.map((s: string) => s.trim().toLowerCase());
+
     const isAutoTTS =
       document.cookie
         .split("; ")
         .find((row) => row.startsWith("autoTTS="))
         ?.split("=")[1] === "true";
-    if (isAutoTTS) {
-      speak(currentCard.content_raw, lang as string);
-    }
 
-    let updatedQueue = [...queue];
-    let isFinishedForToday = false;
-
-    if (isFreeMode) {
-      if (!isCorrect) {
-        setStatus("error");
-        setFeedbackMsg("Oups ! On la revoit dans ~1 minute.");
-        updatedQueue.push({
-          ...currentCard,
-          status: "learning",
-          dueTime: Date.now() + 60 * 1000, // + 1 minute
-          isRetry: true,
-        });
-      } else {
-        setStatus("success");
-        setFeedbackMsg("Bien joué !");
-        isFinishedForToday = true;
-      }
+    if (cleanedInput === target) {
+      setStatus("success");
+      setFeedbackMsg("Bien joué !");
+      if (isAutoTTS) speak(currentCard.content_raw, lang as string);
+    } else if (cleanedSynonyms.includes(cleanedInput)) {
+      setStatus("synonym");
+      setFeedbackMsg("C'est un synonyme correct dans ce contexte, trouve le mot exact !");
     } else {
-      // MODE STANDARD / BONUS
-      if (!isCorrect) {
-        setStatus("error");
-        setFeedbackMsg("Aïe. On la revoit dans ~1 minute.");
-        updatedQueue.push({
-          ...currentCard,
-          status: "learning",
-          dueTime: Date.now() + 60 * 1000, // + 1 minute
-          learningStep: 0,
-          isRetry: true,
-        });
-      } else {
-        setStatus("success");
-        if (currentCard.type === "new") {
-          const currentStep = currentCard.learningStep || 0;
-          if (currentStep === 0) {
-            setFeedbackMsg("Bien ! On confirme ça dans ~10 minutes.");
-            updatedQueue.push({
-              ...currentCard,
-              status: "learning",
-              dueTime: Date.now() + 10 * 60 * 1000, // + 10 minutes
-              learningStep: 1,
-              isRetry: true,
-            });
-          } else {
-            setFeedbackMsg("Parfait ! Mot acquis pour aujourd'hui.");
-            isFinishedForToday = true;
+      setStatus("error");
+      setFeedbackMsg("Aïe. On la revoit dans ~1 minute.");
+      if (isAutoTTS) speak(currentCard.content_raw, lang as string);
+    }
+  };
+
+  // --- ABANDON (JE NE SAIS PAS) ---
+  const handleGiveUp = () => {
+    if (status !== "idle" && status !== "synonym") return;
+    setInput("");
+    setStatus("error");
+    setFeedbackMsg("Aïe. On la revoit dans ~1 minute.");
+    const isAutoTTS =
+      document.cookie
+        .split("; ")
+        .find((row) => row.startsWith("autoTTS="))
+        ?.split("=")[1] === "true";
+    if (isAutoTTS) speak(currentCard.content_raw, lang as string);
+  };
+
+  // --- RACCOURCIS CLAVIER ---
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      const isTyping = document.activeElement === inputRef.current;
+      if (isTyping && (status === "idle" || status === "synonym")) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          handleSubmit();
+        }
+        return;
+      }
+
+      if (status === "success" || status === "error") {
+        const key = e.key.toLowerCase();
+        if (key === "m") {
+          e.preventDefault();
+          speak(currentCard.answer_target, lang as string);
+          return;
+        }
+        if (key === "p") {
+          e.preventDefault();
+          speak(currentCard.content_raw, lang as string);
+          return;
+        }
+
+        if (!isFreeMode) {
+          if (e.key === "1") {
+            e.preventDefault();
+            handleGrade(1);
+          } else if (e.key === "2") {
+            e.preventDefault();
+            handleGrade(2);
+          } else if (e.key === "3") {
+            e.preventDefault();
+            handleGrade(3);
+          } else if (e.key === "4") {
+            e.preventDefault();
+            handleGrade(4);
+          } else if (e.key === " " || e.key === "Enter") {
+            e.preventDefault();
+            handleGrade(status === "success" ? 3 : 1); // Raccourci par défaut : Bien si correct, Revoir si faux
           }
         } else {
-          setFeedbackMsg("Excellent ! Révision validée.");
-          isFinishedForToday = true;
+          if (e.key === " " || e.key === "Enter") {
+            e.preventDefault();
+            handleGrade(status === "success" ? 3 : 1);
+          }
         }
       }
-    }
+    };
 
-    setQueue(updatedQueue); // On met à jour la file d'attente en arrière-plan
-
-    if (isFinishedForToday) {
-      setStats((s) => ({ ...s, completed: s.completed + 1 }));
-
-      if (!isFreeMode) {
-        // Sauvegarde DB
-        let result;
-        if (currentCard.isRetry || currentCard.learningStep === 1) {
-          // @ts-ignore
-          result = await saveResult(
-            currentCard.review_id,
-            currentCard.id,
-            true,
-            0
-          );
-        } else {
-          // @ts-ignore
-          result = await saveResult(
-            currentCard.review_id,
-            currentCard.id,
-            true,
-            currentCard.interval
-          );
-        }
-        if (result && !result.success) {
-          console.error("Erreur sauvegarde :", result.error);
-        }
-      }
-    }
-  };
-
-  const handleSubmit = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (status !== "idle") return;
-    const isCorrect =
-      input.trim().toLowerCase() ===
-      currentCard.answer_target.trim().toLowerCase();
-    processResult(isCorrect);
-  };
-
-  const handleGiveUp = () => {
-    if (status !== "idle") return;
-    setInput("");
-    processResult(false);
-  };
-
-  const handleNext = () => {
-    setFeedbackMsg("");
-    const { nextCard, newQueue } = getNextState(queue);
-    setCurrentCard(nextCard);
-    setQueue(newQueue);
-    setInput("");
-    setStatus("idle");
-    setTimeout(() => inputRef.current?.focus(), 0);
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (status === "idle" && e.key === "Enter") {
-      handleSubmit();
-      return;
-    }
-    if (status !== "idle" && e.key === " ") {
-      e.preventDefault();
-      handleNext();
-    }
-  };
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [status, input, currentCard, queue]);
 
   const preventBlur = (e: React.MouseEvent) => {
     e.preventDefault();
   };
 
-  if (isLoading)
+  // --- TEXTES DES BOUTONS DE GRADING (FSRS) ---
+  const getButtonIntervalText = (rating: number) => {
+    if (!currentCard) return "";
+    const isLearning = currentCard.status === "unseen" || currentCard.status === "learning";
+    if (isLearning) {
+      if (rating === 1) return "< 1 min";
+      if (rating === 2) return "< 10 min";
+      if (rating === 3) return "< 10 min";
+      // Easy graduates directly to FSRS
+      const fsrs = calculateFSRS(4, currentCard);
+      return `${fsrs.interval} j`;
+    } else {
+      const fsrs = calculateFSRS(rating, currentCard);
+      return `${fsrs.interval} j`;
+    }
+  };
+
+  if (isLoading) {
     return (
-      <div className="min-h-[100dvh] flex items-center justify-center text-slate-500">
-        Chargement...
+      <div className="min-h-[100dvh] flex items-center justify-center text-slate-500 bg-slate-50">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+          <span className="font-medium text-sm text-slate-600">Chargement de la session...</span>
+        </div>
       </div>
     );
+  }
 
   // Fin de session
-  if (!isLoading && !currentCard) {
+  if (!currentCard) {
     return (
       <div className="min-h-[100dvh] flex flex-col items-center justify-center p-8 bg-slate-50 text-center">
         <div className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full border border-slate-100">
           <h2 className="text-2xl font-bold text-slate-800 mb-4">
             {isFreeMode ? "Entraînement terminé ! 💪" : "Session terminée ! 🎉"}
           </h2>
-          <p className="text-slate-500 mb-6">
+          <p className="text-slate-500 mb-6 font-medium">
             {isFreeMode
               ? "Bravo, belle révision."
               : "Tu es à jour. Reviens demain."}
           </p>
           <Link
             href={`/${lang}`}
-            className="block w-full bg-indigo-600 text-white font-bold px-6 py-3 rounded-xl hover:bg-indigo-700 transition-colors"
+            className="block w-full bg-indigo-600 text-white font-bold px-6 py-3 rounded-xl hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-600/20 active:scale-95 duration-100"
           >
             Retour au Dashboard
           </Link>
@@ -260,6 +362,9 @@ export default function LearnPage() {
   }
 
   const textParts = currentCard.display_text.split("...");
+  const isVerb =
+    currentCard.part_of_speech?.toLowerCase().includes("verb") ||
+    currentCard.part_of_speech?.toLowerCase().includes("v");
 
   return (
     <div className="min-h-[100dvh] bg-slate-100 flex flex-col items-center justify-start md:justify-center pt-6 md:pt-0 pb-10 p-4 font-sans overflow-y-auto">
@@ -269,31 +374,31 @@ export default function LearnPage() {
           <span>
             Validées : {stats.completed} / {stats.initial}
           </span>
-          <span className="text-[10px] text-slate-300 normal-case mt-0.5">
+          <span className="text-[10px] text-slate-300 normal-case mt-0.5 font-semibold">
             File d'attente : {queue.length + 1}
           </span>
         </div>
 
         {isFreeMode ? (
-          <span className="px-2 py-1 rounded-md bg-purple-100 text-purple-600 border border-purple-200">
+          <span className="px-2.5 py-1 rounded-md bg-purple-100 text-purple-600 border border-purple-200">
             Mode Entraînement
           </span>
         ) : currentCard.status === "learning" ? (
           currentCard.learningStep === 1 ? (
-            <span className="px-2 py-1 rounded-md bg-yellow-100 text-yellow-700 animate-pulse border border-yellow-200">
+            <span className="px-2.5 py-1 rounded-md bg-yellow-100 text-yellow-700 animate-pulse border border-yellow-200">
               Confirmation (10m)
             </span>
           ) : (
-            <span className="px-2 py-1 rounded-md bg-red-100 text-red-600 animate-pulse">
+            <span className="px-2.5 py-1 rounded-md bg-red-100 text-red-600 animate-pulse border border-red-200">
               À revoir (1m)
             </span>
           )
         ) : currentCard.type === "new" ? (
-          <span className="px-2 py-1 rounded-md bg-blue-100 text-blue-600">
+          <span className="px-2.5 py-1 rounded-md bg-blue-100 text-blue-600 border border-blue-200">
             Nouveau
           </span>
         ) : (
-          <span className="px-2 py-1 rounded-md bg-orange-100 text-orange-600">
+          <span className="px-2.5 py-1 rounded-md bg-orange-100 text-orange-600 border border-orange-200">
             Révision
           </span>
         )}
@@ -302,18 +407,14 @@ export default function LearnPage() {
       {/* CARTE PRINCIPALE */}
       <div
         className={`
-        w-full max-w-xl bg-white rounded-3xl shadow-xl overflow-hidden transition-all duration-300 border-2 relative shrink-0
-        ${
-          status === "idle"
-            ? isFreeMode
-              ? "border-purple-200"
-              : "border-transparent"
-            : ""
-        }
-        ${status === "error" ? "border-red-100 ring-4 ring-red-50" : ""}
-        ${status === "success" ? "border-green-100 ring-4 ring-green-50" : ""}
-      `}
+          w-full max-w-xl bg-white rounded-3xl shadow-xl overflow-hidden transition-all duration-300 border-2 relative shrink-0
+          ${status === "idle" ? (isFreeMode ? "border-purple-200" : "border-transparent") : ""}
+          ${status === "error" ? "border-red-200 ring-4 ring-red-50" : ""}
+          ${status === "success" ? "border-green-200 ring-4 ring-green-50" : ""}
+          ${status === "synonym" ? "border-amber-400 ring-4 ring-amber-100" : ""}
+        `}
       >
+        {/* HEADER DE LA CARTE : INDICATION DE LA LANGUE / INFOS */}
         <div className="bg-slate-50 p-6 text-center border-b border-slate-100">
           <h1 className="text-2xl md:text-3xl font-extrabold text-slate-800 mb-3 tracking-tight">
             {currentCard.hint || "..."}
@@ -324,7 +425,7 @@ export default function LearnPage() {
                 {currentCard.part_of_speech}
               </span>
             )}
-            {currentCard.grammar_notes && (
+            {isVerb && currentCard.grammar_notes && (
               <span className="px-3 py-1 rounded-md bg-purple-100 text-purple-700 text-xs font-bold uppercase">
                 {currentCard.grammar_notes}
               </span>
@@ -332,6 +433,7 @@ export default function LearnPage() {
           </div>
         </div>
 
+        {/* CONTENU DE LA CARTE */}
         <div className="p-8 bg-white relative">
           <div className="absolute top-4 right-4">
             {status === "idle" ? (
@@ -399,8 +501,13 @@ export default function LearnPage() {
                         ref={inputRef}
                         type="text"
                         value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={handleKeyDown}
+                        onChange={(e) => {
+                          setInput(e.target.value);
+                          if (status === "synonym") {
+                            setStatus("idle");
+                            setFeedbackMsg("");
+                          }
+                        }}
                         autoFocus={true}
                         autoCorrect="off"
                         autoCapitalize="none"
@@ -408,22 +515,24 @@ export default function LearnPage() {
                         autoComplete="off"
                         size={1}
                         className={`w-full min-w-0 bg-transparent border-b-2 text-center outline-none p-0 px-0 transition-all font-bold 
-                                ${
-                                  status === "idle"
-                                    ? "border-indigo-400 text-indigo-700 focus:border-indigo-600 focus:bg-indigo-50/30 placeholder:text-indigo-300"
-                                    : "opacity-0 pointer-events-none"
-                                }`}
+                          ${
+                            status === "idle"
+                              ? "border-indigo-400 text-indigo-700 focus:border-indigo-600 focus:bg-indigo-50/30 placeholder:text-indigo-300"
+                              : status === "synonym"
+                              ? "border-amber-400 text-amber-600 focus:border-amber-600 focus:bg-amber-50/30 placeholder:text-amber-300"
+                              : "opacity-0 pointer-events-none"
+                          }`}
                         placeholder="?"
                       />
 
-                      {status !== "idle" && (
+                      {status !== "idle" && status !== "synonym" && (
                         <span
                           className={`col-start-1 row-start-1 w-full px-0 border-b-2 font-bold text-center pointer-events-none absolute top-0 left-0
-                                  ${
-                                    status === "success"
-                                      ? "border-green-500 text-green-700 bg-green-50"
-                                      : "border-red-500 text-red-600 bg-red-50 line-through decoration-2"
-                                  }`}
+                            ${
+                              status === "success"
+                                ? "border-green-500 text-green-700 bg-green-50"
+                                : "border-red-500 text-red-600 bg-red-50 line-through decoration-2"
+                            }`}
                         >
                           {input || "(Vide)"}
                         </span>
@@ -439,34 +548,48 @@ export default function LearnPage() {
             <div className="mt-8 flex flex-col items-center animate-bounce-short">
               <div
                 className={`text-center ${
-                  status === "error" ? "text-red-600" : "text-green-600"
+                  status === "error"
+                    ? "text-red-600"
+                    : status === "synonym"
+                    ? "text-amber-600"
+                    : "text-green-600"
                 }`}
               >
                 <p className="text-xs font-bold uppercase tracking-widest mb-1">
-                  {status === "error" ? "La bonne réponse :" : "Excellent !"}
+                  {status === "error"
+                    ? "La bonne réponse :"
+                    : status === "synonym"
+                    ? "Presque !"
+                    : "Excellent !"}
                 </p>
-                <div className="flex items-center gap-3 justify-center">
-                  <span className="text-2xl md:text-3xl font-extrabold">
-                    {currentCard.answer_target}
-                  </span>
-                  <button
-                    onMouseDown={preventBlur}
-                    onClick={() =>
-                      speak(currentCard.answer_target, lang as string)
-                    }
-                    className="p-2 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 24 24"
-                      fill="currentColor"
-                      className="w-5 h-5"
+                {status !== "synonym" ? (
+                  <div className="flex items-center gap-3 justify-center">
+                    <span className="text-2xl md:text-3xl font-extrabold">
+                      {currentCard.answer_target}
+                    </span>
+                    <button
+                      onMouseDown={preventBlur}
+                      onClick={() =>
+                        speak(currentCard.answer_target, lang as string)
+                      }
+                      className="p-2 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors"
                     >
-                      <path d="M13.5 4.06c0-1.336-1.616-2.005-2.56-1.06l-4.5 4.5H4.508c-1.141 0-2.318.664-2.66 1.905A9.76 9.76 0 001.5 12c0 .898.121 1.768.35 2.595.341 1.24 1.518 1.905 2.659 1.905h1.93l4.5 4.5c.945.945 2.561.276 2.561-1.06V4.06zM18.584 5.106a.75.75 0 011.06 0c3.808 3.807 3.808 9.98 0 13.788a.75.75 0 11-1.06-1.06 8.25 8.25 0 000-11.668.75.75 0 010-1.06z" />
-                    </svg>
-                  </button>
-                </div>
-                {feedbackMsg && (
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        className="w-5 h-5"
+                      >
+                        <path d="M13.5 4.06c0-1.336-1.616-2.005-2.56-1.06l-4.5 4.5H4.508c-1.141 0-2.318.664-2.66 1.905A9.76 9.76 0 001.5 12c0 .898.121 1.768.35 2.595.341 1.24 1.518 1.905 2.659 1.905h1.93l4.5 4.5c.945.945 2.561.276 2.561-1.06V4.06zM18.584 5.106a.75.75 0 011.06 0c3.808 3.807 3.808 9.98 0 13.788a.75.75 0 11-1.06-1.06 8.25 8.25 0 000-11.668.75 0 010-1.06z" />
+                      </svg>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="text-sm font-semibold text-amber-700 bg-amber-50 px-4 py-2.5 rounded-xl border border-amber-200 shadow-sm">
+                    C'est un synonyme correct, mais trouve le mot cible exact !
+                  </div>
+                )}
+                {feedbackMsg && status !== "synonym" && (
                   <p className="text-xs text-slate-400 mt-4 italic font-medium opacity-80 animate-fade-in">
                     {feedbackMsg}
                   </p>
@@ -474,39 +597,111 @@ export default function LearnPage() {
               </div>
             </div>
           )}
+
+          {/* DÉCOMPOSITION MORPHOLOGIQUE (En bas de la carte, après validation) */}
+          {(status === "success" || status === "error") && (
+            <div className="border-t border-slate-100 bg-slate-50/50 p-4 text-xs text-slate-500 flex flex-wrap gap-x-6 gap-y-2 justify-center mt-8 rounded-2xl">
+              {currentCard.lemma && (
+                <div>
+                  <span className="font-semibold text-slate-400">Lemme :</span> {currentCard.lemma}
+                </div>
+              )}
+              {currentCard.radical && (
+                <div>
+                  <span className="font-semibold text-slate-400">Radical :</span> {currentCard.radical}
+                </div>
+              )}
+              {currentCard.prefix && (
+                <div>
+                  <span className="font-semibold text-slate-400">Préfixe :</span> {currentCard.prefix}
+                </div>
+              )}
+              {currentCard.suffix && (
+                <div>
+                  <span className="font-semibold text-slate-400">Suffixe :</span> {currentCard.suffix}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
+        {/* SECTION DES BOUTONS DE CONTRÔLE / GRADING */}
         <div className="p-4 bg-slate-50 border-t border-slate-100">
-          {status === "idle" ? (
+          {status === "idle" || status === "synonym" ? (
             <div className="flex gap-2">
               <button
                 type="button"
                 onMouseDown={preventBlur}
                 onClick={handleGiveUp}
-                className="w-1/3 py-3 rounded-xl font-bold text-sm text-slate-500 bg-slate-200 hover:bg-slate-300 transition-colors"
+                className="w-1/3 py-3 rounded-xl font-bold text-sm text-slate-500 bg-slate-200 hover:bg-slate-300 transition-colors shadow-sm active:scale-95 duration-100"
               >
                 Je ne sais pas
               </button>
               <button
                 onMouseDown={preventBlur}
-                onClick={handleSubmit}
-                className="w-2/3 py-3 rounded-xl font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-md transition-colors"
+                onClick={() => handleSubmit()}
+                className="w-2/3 py-3 rounded-xl font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-md shadow-indigo-600/10 transition-colors active:scale-95 duration-100"
               >
                 Valider
               </button>
             </div>
           ) : (
-            <button
-              ref={nextButtonRef}
-              onClick={handleNext}
-              className={`w-full py-4 rounded-xl font-bold text-lg text-white shadow-md transition-all active:scale-95 ${
-                status === "success"
-                  ? "bg-green-600 hover:bg-green-700"
-                  : "bg-slate-800 hover:bg-slate-900"
-              }`}
-            >
-              Continuer (Espace) →
-            </button>
+            /* SI RÉPONDU : ON AFFICHE LE CONTINUER OU LES 4 BOUTONS FSRS */
+            <div className="w-full">
+              {(status === "success" || status === "error") && !isFreeMode ? (
+                <div className="flex flex-col gap-3">
+                  <div className="text-center text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">
+                    Évalue ta facilité de rappel :
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    <button
+                      onClick={() => handleGrade(1)}
+                      className="flex flex-col items-center justify-center py-2.5 px-1 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 transition-all font-semibold active:scale-95 duration-100 shadow-sm"
+                    >
+                      <span className="text-[10px] uppercase opacity-75">À revoir</span>
+                      <span className="text-sm font-extrabold mt-0.5">{getButtonIntervalText(1)}</span>
+                      <span className="text-[9px] opacity-50 mt-1 font-bold">Touche 1</span>
+                    </button>
+                    <button
+                      onClick={() => handleGrade(2)}
+                      className="flex flex-col items-center justify-center py-2.5 px-1 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 transition-all font-semibold active:scale-95 duration-100 shadow-sm"
+                    >
+                      <span className="text-[10px] uppercase opacity-75">Difficile</span>
+                      <span className="text-sm font-extrabold mt-0.5">{getButtonIntervalText(2)}</span>
+                      <span className="text-[9px] opacity-50 mt-1 font-bold">Touche 2</span>
+                    </button>
+                    <button
+                      onClick={() => handleGrade(3)}
+                      className="flex flex-col items-center justify-center py-2.5 px-1 rounded-xl bg-green-50 hover:bg-green-100 text-green-700 border border-green-200 transition-all font-semibold active:scale-95 duration-100 shadow-sm"
+                    >
+                      <span className="text-[10px] uppercase opacity-75">Bien</span>
+                      <span className="text-sm font-extrabold mt-0.5">{getButtonIntervalText(3)}</span>
+                      <span className="text-[9px] opacity-50 mt-1 font-bold">Touche 3</span>
+                    </button>
+                    <button
+                      onClick={() => handleGrade(4)}
+                      className="flex flex-col items-center justify-center py-2.5 px-1 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 transition-all font-semibold active:scale-95 duration-100 shadow-sm"
+                    >
+                      <span className="text-[10px] uppercase opacity-75">Facile</span>
+                      <span className="text-sm font-extrabold mt-0.5">{getButtonIntervalText(4)}</span>
+                      <span className="text-[9px] opacity-50 mt-1 font-bold">Touche 4</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  ref={nextButtonRef}
+                  onClick={() => handleGrade(status === "success" ? 3 : 1)}
+                  className={`w-full py-4 rounded-xl font-bold text-lg text-white shadow-md transition-all active:scale-95 duration-100 ${
+                    status === "success"
+                      ? "bg-green-600 hover:bg-green-700 shadow-green-600/10"
+                      : "bg-slate-800 hover:bg-slate-900 shadow-slate-800/10"
+                  }`}
+                >
+                  Continuer (Espace) →
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -514,7 +709,7 @@ export default function LearnPage() {
       <div className="mt-6 shrink-0">
         <Link
           href={`/${lang}`}
-          className="text-slate-400 hover:text-slate-600 text-xs font-bold uppercase tracking-widest transition-colors"
+          className="text-slate-400 hover:text-slate-600 text-xs font-bold uppercase tracking-widest transition-colors duration-100"
         >
           Quitter
         </Link>

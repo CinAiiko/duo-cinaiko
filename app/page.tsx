@@ -14,7 +14,7 @@ export default async function HomePage() {
         getAll() {
           return cookieStore.getAll();
         },
-        setAll() {},
+        setAll() { },
       },
     }
   );
