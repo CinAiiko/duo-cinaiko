@@ -200,3 +200,9 @@ Voici un récapitulatif complet de toutes les évolutions majeures implémentée
      - Ajout de nouvelles phrases au format Cloze-Test (avec parsing automatique de la réponse et du trou).
      - Prise en charge des synonymes et des traductions lors de la création d'exemples.
      - Suppression de phrases d'exemples individuelles.
+
+8. **Optimisation des performances, intervalles et compteurs Anki (Zéro Latence & Progression)** :
+   - Remplacement de l'attente bloquante (`await`) de la sauvegarde en base de données (`saveResult`) par un appel asynchrone en tâche de fond pour une transition instantanée des cartes.
+   - Ajustement des intervalles pour les mots vus pour la première fois : **À revoir (Again) : 1 min**, **Difficile (Hard) : 6 min**, et **Bien (Good) : 10 min** (au lieu de 10 min pour Hard et Good auparavant).
+   - Les textes des boutons et le label de statut "Confirmation" ont été mis à jour en conséquence.
+   - Intégration de compteurs de progression de style Anki en haut de carte : **Bleu (nouveaux mots)**, **Rouge (mots à revoir/apprentissage)**, **Vert (mots déjà vus/révisions)**, et un compteur supplémentaire **Gris (mots validés durant la session)**.
