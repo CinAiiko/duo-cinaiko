@@ -28,7 +28,7 @@ export async function toggleLanguageActive(langCode: string, isActive: boolean) 
         getAll() {
           return cookieStore.getAll();
         },
-        setAll() {},
+        setAll() { },
       },
     }
   );
@@ -69,7 +69,7 @@ export async function getUserActiveLanguages() {
         getAll() {
           return cookieStore.getAll();
         },
-        setAll() {},
+        setAll() { },
       },
     }
   );
