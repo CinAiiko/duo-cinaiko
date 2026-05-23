@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { getSession, saveResult } from "./actions";
+import { getSession, saveResult, getFsrsSettings } from "./actions";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { speak } from "@/app/utils/tts";
@@ -25,6 +25,8 @@ export default function LearnPage() {
   const [currentCard, setCurrentCard] = useState<any>(null);
   const [stats, setStats] = useState({ initial: 0, completed: 0 });
   const [isLoading, setIsLoading] = useState(true);
+  const [customWeights, setCustomWeights] = useState<number[] | null>(null);
+  const [recentCardIds, setRecentCardIds] = useState<string[]>([]);
 
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<"idle" | "success" | "error" | "synonym">("idle");
@@ -33,11 +35,13 @@ export default function LearnPage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const nextButtonRef = useRef<HTMLButtonElement>(null);
 
-  // Charger les données de session au démarrage
   useEffect(() => {
     const loadData = async () => {
       // @ts-ignore
       const data = await getSession(lang as string, mode);
+      const weights = await getFsrsSettings(lang as string);
+      setCustomWeights(weights);
+
       if (data && data.length > 0) {
         // Initialiser toutes les cartes comme "non vues" (unseen)
         const activeQueue = data.map((c: any) => ({
@@ -50,7 +54,7 @@ export default function LearnPage() {
 
         // Sortir la toute première carte de la file d'attente
         const q = [...activeQueue];
-        const { nextCard, newQueue } = getNextState(q);
+        const { nextCard, newQueue } = getNextState(q, []);
         setCurrentCard(nextCard);
         setQueue(newQueue);
       }
@@ -67,15 +71,23 @@ export default function LearnPage() {
   }, [status, isLoading, currentCard]);
 
   // --- LOGIQUE D'ATTRIBUTION DES CARTES (QUEUE) ---
-  const getNextState = (currentQueue: any[]) => {
+  const getNextState = (currentQueue: any[], historyIds: string[] = []) => {
     if (currentQueue.length === 0) return { nextCard: null, newQueue: [] };
 
     const now = Date.now();
     const q = [...currentQueue];
 
-    // 1. Priorité absolue : Les cartes à revoir sous 1 min (learningStep === 0) qui sont dues
+    // 1. Priorité absolue : Les cartes à revoir sous 1 min (learningStep === 0) dues ou presque dues (limite d'avance de 40s)
+    // On exclut les cartes répondues dans les 2 derniers coups pour assurer un décalage minimum (mélange des erreurs et des nouveaux mots).
+    const activeUrgentHistory = historyIds.slice(0, 2);
     const dueUrgent = q
-      .filter((c) => c.status === "learning" && c.learningStep === 0 && c.dueTime <= now)
+      .filter(
+        (c) =>
+          c.status === "learning" &&
+          c.learningStep === 0 &&
+          c.dueTime <= now + 40 * 1000 &&
+          !activeUrgentHistory.includes(c.id)
+      )
       .sort((a, b) => a.dueTime - b.dueTime);
 
     if (dueUrgent.length > 0) {
@@ -83,9 +95,15 @@ export default function LearnPage() {
       return { nextCard: next, newQueue: q.filter((c) => c !== next) };
     }
 
-    // 2. Ensuite : Les cartes à revoir sous 10 min (learningStep === 1) qui sont dues
+    // 2. Ensuite : Les cartes à revoir sous 6-10 min (learningStep === 1) qui sont dues
     const dueNormal = q
-      .filter((c) => c.status === "learning" && c.learningStep === 1 && c.dueTime <= now)
+      .filter(
+        (c) =>
+          c.status === "learning" &&
+          c.learningStep === 1 &&
+          c.dueTime <= now &&
+          !activeUrgentHistory.includes(c.id)
+      )
       .sort((a, b) => a.dueTime - b.dueTime);
 
     if (dueNormal.length > 0) {
@@ -113,7 +131,11 @@ export default function LearnPage() {
       });
 
     if (remainingLearning.length > 0) {
-      const next = remainingLearning[0];
+      // Éviter de répéter immédiatement les cartes très récentes (décalage intelligent)
+      const maxHistoryToRespect = Math.max(0, remainingLearning.length - 1);
+      const activeHistory = historyIds.slice(0, Math.min(3, maxHistoryToRespect));
+      const next = remainingLearning.find((c) => !activeHistory.includes(c.id)) || remainingLearning[0];
+
       return { nextCard: next, newQueue: q.filter((c) => c !== next) };
     }
 
@@ -124,7 +146,8 @@ export default function LearnPage() {
   const handleGrade = async (rating: number) => {
     if (status !== "success" && status !== "error") return;
 
-    const isLearning = currentCard.status === "unseen" || currentCard.status === "learning";
+    const isNew = currentCard.type === "new";
+    const isLearning = currentCard.status === "learning" || (isNew && currentCard.status === "unseen");
     let updatedQueue = [...queue];
     let isGraduated = false;
 
@@ -150,13 +173,17 @@ export default function LearnPage() {
           dueTime: Date.now() + 60 * 1000,
         });
       } else if (rating === 2) {
-        // Difficile (Hard) -> step 1 (6m)
-        updatedQueue.push({
-          ...currentCard,
-          status: "learning",
-          learningStep: 1,
-          dueTime: Date.now() + 6 * 60 * 1000,
-        });
+        // Difficile (Hard)
+        if (isLearning) {
+          updatedQueue.push({
+            ...currentCard,
+            status: "learning",
+            learningStep: 1,
+            dueTime: Date.now() + 6 * 60 * 1000,
+          });
+        } else {
+          isGraduated = true;
+        }
       } else if (rating === 3) {
         // Bien (Good)
         if (isLearning && (currentCard.learningStep || 0) === 0) {
@@ -177,7 +204,7 @@ export default function LearnPage() {
       }
 
       // Enregistrer le résultat SRS en base de données de manière asynchrone (non bloquante)
-      saveResult(currentCard.word_id, currentCard.id, rating)
+      saveResult(currentCard.word_id, currentCard.id, rating, lang as string)
         .then((result) => {
           if (result && !result.success) {
             console.error("Erreur sauvegarde FSRS :", result.error);
@@ -192,11 +219,15 @@ export default function LearnPage() {
       setStats((s) => ({ ...s, completed: s.completed + 1 }));
     }
 
+    // Mettre à jour l'historique des cartes récentes locales
+    const nextHistory = [currentCard.id, ...recentCardIds].slice(0, 5);
+    setRecentCardIds(nextHistory);
+
     setQueue(updatedQueue);
 
     // Passer à la carte suivante
     setFeedbackMsg("");
-    const { nextCard, newQueue } = getNextState(updatedQueue);
+    const { nextCard, newQueue } = getNextState(updatedQueue, nextHistory);
     setCurrentCard(nextCard);
     setQueue(newQueue);
     setInput("");
@@ -309,16 +340,27 @@ export default function LearnPage() {
   // --- TEXTES DES BOUTONS DE GRADING (FSRS) ---
   const getButtonIntervalText = (rating: number) => {
     if (!currentCard) return "";
-    const isLearning = currentCard.status === "unseen" || currentCard.status === "learning";
+    const isNew = currentCard.type === "new";
+    const isLearning = currentCard.status === "learning" || (isNew && currentCard.status === "unseen");
+    
     if (isLearning) {
       if (rating === 1) return "< 1 min";
       if (rating === 2) return "< 6 min";
-      if (rating === 3) return "< 10 min";
+      if (rating === 3) {
+        // Si c'est l'étape de confirmation (step 1), Good le valide définitivement (FSRS)
+        if ((currentCard.learningStep || 0) === 1) {
+          const fsrs = calculateFSRS(3, currentCard, customWeights);
+          return `${fsrs.interval} j`;
+        }
+        return "< 10 min";
+      }
       // Easy graduates directly to FSRS
-      const fsrs = calculateFSRS(4, currentCard);
+      const fsrs = calculateFSRS(4, currentCard, customWeights);
       return `${fsrs.interval} j`;
     } else {
-      const fsrs = calculateFSRS(rating, currentCard);
+      // Révisions
+      if (rating === 1) return "< 1 min";
+      const fsrs = calculateFSRS(rating, currentCard, customWeights);
       return `${fsrs.interval} j`;
     }
   };

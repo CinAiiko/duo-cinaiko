@@ -182,7 +182,8 @@ export async function getSession(
 export async function saveResult(
   word_id: string,
   sentence_id: string,
-  rating: number // 1: Again, 2: Hard, 3: Good, 4: Easy
+  rating: number, // 1: Again, 2: Hard, 3: Good, 4: Easy
+  lang: string
 ) {
   const cookieStore = await cookies();
   const supabase = createServerClient(
@@ -199,12 +200,13 @@ export async function saveResult(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { success: false, error: "Utilisateur non connecté" };
 
-  // 1. Sauvegarde de l'historique de la phrase
+  // 1. Sauvegarde de l'historique de la phrase (avec la note exacte)
   await supabase.from("review_logs").insert({
     user_id: user.id,
     word_id: word_id,
     sentence_id: sentence_id,
-    is_correct: rating >= 2
+    is_correct: rating >= 2,
+    rating: rating
   });
 
   // 2. Récupération pour SRS du mot (on récupère toutes les colonnes FSRS)
@@ -217,8 +219,21 @@ export async function saveResult(
 
   if (fetchError) return { success: false, error: fetchError.message };
 
+  // 2.5 Récupération des poids FSRS personnalisés
+  let customWeights = null;
+  const { data: settings } = await supabase
+    .from("user_fsrs_settings")
+    .select("weights")
+    .eq("user_id", user.id)
+    .eq("language_code", lang)
+    .maybeSingle();
+
+  if (settings) {
+    customWeights = settings.weights;
+  }
+
   // 3. Calcul FSRS
-  const fsrs = calculateFSRS(rating, existingReview);
+  const fsrs = calculateFSRS(rating, existingReview, customWeights);
 
   const nextDate = new Date();
   nextDate.setDate(nextDate.getDate() + fsrs.interval);
@@ -249,4 +264,31 @@ export async function saveResult(
 
   if (saveError) return { success: false, error: saveError.message };
   return { success: true };
+}
+
+// --- 3. RÉCUPÉRATION DES PARAMÈTRES FSRS ---
+export async function getFsrsSettings(lang: string) {
+  const cookieStore = await cookies();
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() { return cookieStore.getAll(); },
+        setAll() {},
+      },
+    }
+  );
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return null;
+
+  const { data } = await supabase
+    .from("user_fsrs_settings")
+    .select("weights")
+    .eq("user_id", user.id)
+    .eq("language_code", lang)
+    .maybeSingle();
+
+  return data?.weights || null;
 }

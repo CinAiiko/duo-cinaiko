@@ -17,9 +17,10 @@ export interface FSRSResult {
 
 export function calculateFSRS(
   rating: number, // 1: Again, 2: Hard, 3: Good, 4: Easy
-  existingReview?: FSRSInput | null
+  existingReview?: FSRSInput | null,
+  customWeights?: number[] | null
 ): FSRSResult {
-  const w = DEFAULT_W;
+  const w = customWeights && customWeights.length === 17 ? customWeights : DEFAULT_W;
 
   // 1. Initial review (New card)
   if (!existingReview || !existingReview.last_reviewed_at || existingReview.stability === 0) {

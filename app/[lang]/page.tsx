@@ -11,7 +11,7 @@ type Props = {
 export default async function LanguageDashboard({ params }: Props) {
   const { lang } = await params;
 
-  const VALID_LANGS = ["en", "es", "de"];
+  const VALID_LANGS = ["en", "es", "de", "pt", "it", "zh", "ja"];
   if (!VALID_LANGS.includes(lang)) redirect("/");
 
   const cookieStore = await cookies();
@@ -113,181 +113,298 @@ export default async function LanguageDashboard({ params }: Props) {
       ? Math.round((learnedCount / totalWordsCount) * 100)
       : 0;
 
+  const flagMap: Record<string, string> = {
+    en: "🇬🇧",
+    es: "🇪🇸",
+    de: "🇩🇪",
+    pt: "🇵🇹",
+    it: "🇮🇹",
+    zh: "🇨🇳",
+    ja: "🇯🇵"
+  };
+  const nameMap: Record<string, string> = {
+    en: "Anglais",
+    es: "Espagnol",
+    de: "Allemand",
+    pt: "Portugais",
+    it: "Italien",
+    zh: "Chinois",
+    ja: "Japonais"
+  };
+  const flag = flagMap[lang] || "🌐";
+  const langName = nameMap[lang] || "Langue";
+
+  // Define custom styles depending on the language for a tailored premium feel
+  const theme = ({
+    en: {
+      flagGlow: "shadow-blue-500/20 bg-blue-50 border-blue-100",
+      accentBg: "from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-blue-500/10",
+      accentText: "text-blue-600",
+      barBg: "from-blue-500 to-indigo-500",
+      btnBorder: "border-blue-600 text-blue-600 hover:bg-blue-50",
+      glowBlob1: "bg-blue-200/30",
+      glowBlob2: "bg-indigo-200/20",
+    },
+    es: {
+      flagGlow: "shadow-rose-500/20 bg-rose-50 border-rose-100",
+      accentBg: "from-rose-500 to-orange-500 hover:from-rose-600 hover:to-orange-600 shadow-rose-500/10",
+      accentText: "text-rose-600",
+      barBg: "from-rose-500 to-orange-500",
+      btnBorder: "border-rose-500 text-rose-500 hover:bg-rose-50",
+      glowBlob1: "bg-rose-200/30",
+      glowBlob2: "bg-orange-200/20",
+    },
+    de: {
+      flagGlow: "shadow-amber-500/20 bg-amber-50 border-amber-100",
+      accentBg: "from-amber-500 to-yellow-600 hover:from-amber-600 hover:to-yellow-700 shadow-amber-500/10",
+      accentText: "text-amber-600",
+      barBg: "from-amber-500 to-yellow-500",
+      btnBorder: "border-amber-500 text-amber-500 hover:bg-amber-50",
+      glowBlob1: "bg-amber-200/30",
+      glowBlob2: "bg-yellow-200/20",
+    },
+    pt: {
+      flagGlow: "shadow-emerald-500/20 bg-emerald-50 border-emerald-100",
+      accentBg: "from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-emerald-500/10",
+      accentText: "text-emerald-600",
+      barBg: "from-emerald-500 to-teal-500",
+      btnBorder: "border-emerald-600 text-emerald-600 hover:bg-emerald-50",
+      glowBlob1: "bg-emerald-200/30",
+      glowBlob2: "bg-teal-200/20",
+    },
+    it: {
+      flagGlow: "shadow-teal-500/20 bg-teal-50 border-teal-100",
+      accentBg: "from-teal-600 to-rose-600 hover:from-teal-700 hover:to-rose-700 shadow-teal-500/10",
+      accentText: "text-teal-600",
+      barBg: "from-teal-500 to-rose-500",
+      btnBorder: "border-teal-600 text-teal-600 hover:bg-teal-50",
+      glowBlob1: "bg-teal-200/30",
+      glowBlob2: "bg-rose-200/20",
+    },
+    zh: {
+      flagGlow: "shadow-red-500/20 bg-red-50 border-red-100",
+      accentBg: "from-red-600 to-amber-500 hover:from-red-700 hover:to-amber-600 shadow-red-500/10",
+      accentText: "text-red-600",
+      barBg: "from-red-500 to-amber-500",
+      btnBorder: "border-red-600 text-red-600 hover:bg-red-50",
+      glowBlob1: "bg-red-200/30",
+      glowBlob2: "bg-amber-200/20",
+    },
+    ja: {
+      flagGlow: "shadow-rose-500/20 bg-rose-50 border-rose-100",
+      accentBg: "from-rose-600 to-slate-700 hover:from-rose-700 hover:to-slate-800 shadow-rose-500/10",
+      accentText: "text-rose-600",
+      barBg: "from-rose-500 to-slate-500",
+      btnBorder: "border-rose-600 text-rose-600 hover:bg-rose-50",
+      glowBlob1: "bg-rose-200/30",
+      glowBlob2: "bg-slate-200/20",
+    },
+  } as Record<string, any>)[lang] || {
+    flagGlow: "shadow-indigo-500/20 bg-indigo-50 border-indigo-100",
+    accentBg: "from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 shadow-indigo-500/10",
+    accentText: "text-indigo-600",
+    barBg: "from-indigo-500 to-violet-500",
+    btnBorder: "border-indigo-600 text-indigo-600 hover:bg-indigo-50",
+    glowBlob1: "bg-indigo-200/30",
+    glowBlob2: "bg-violet-200/20",
+  };
+
   return (
-    <div className="min-h-screen bg-slate-50 p-6 font-sans">
-      <div className="max-w-xl mx-auto space-y-8">
-        {/* En-tête */}
-        <header className="flex items-center justify-between pt-4">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-800 uppercase tracking-wider">
-              {lang === "en"
-                ? "Anglais"
-                : lang === "es"
-                ? "Espagnol"
-                : "Allemand"}
-            </h1>
-            <p className="text-sm text-slate-400 font-medium">
-              Dashboard Médecine
-            </p>
-          </div>
-          <div className="flex flex-col items-end gap-3">
-            <div className="flex gap-4 text-sm font-medium">
-              <Link href="/" className="text-slate-400 hover:text-indigo-600">
-                Langues
-              </Link>
-              <Link
-                href="/admin"
-                className="text-slate-400 hover:text-indigo-600"
-              >
-                Admin
-              </Link>
-            </div>
-            {/* Toggle de Lecture Automatique */}
+    <div className="min-h-screen bg-slate-50/50 text-slate-800 p-4 md:p-8 font-sans relative overflow-hidden flex flex-col justify-start items-center">
+      {/* Decorative modern background glowing blur blobs */}
+      <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none z-0">
+        <div className={`absolute -top-40 -left-40 w-96 h-96 rounded-full filter blur-3xl ${theme.glowBlob1}`} />
+        <div className={`absolute top-1/2 right-[-200px] -translate-y-1/2 w-[500px] h-[500px] rounded-full filter blur-3xl ${theme.glowBlob2}`} />
+      </div>
+
+      <div className="max-w-xl w-full space-y-6 z-10 pt-2 md:pt-6">
+        {/* Navigation & Header */}
+        <div className="flex items-center justify-between">
+          <Link
+            href="/"
+            className="w-10 h-10 bg-white hover:bg-slate-50 text-slate-500 hover:text-slate-800 rounded-xl flex items-center justify-center border border-slate-200 shadow-sm transition-all"
+            title="Retour au tableau de bord général"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth="2.5"
+              stroke="currentColor"
+              className="w-5 h-5"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+            </svg>
+          </Link>
+          <div className="flex items-center gap-3">
             <AutoTTSToggle initialValue={isAutoTTS} />
-          </div>
-        </header>
-
-        {/* Bloc Principal */}
-        <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-200 text-center space-y-6">
-          {/* Section Objectifs et Progression */}
-          <div className="space-y-5">
-            {/* Objectif du jour */}
-            <div className="space-y-2">
-              <h2 className="text-xl font-semibold text-slate-900">
-                Objectif du jour
-              </h2>
-              <div className="relative pt-1">
-                <div className="flex mb-2 items-center justify-between">
-                  <span className="text-xs font-semibold inline-block py-1 px-2 uppercase rounded-full text-indigo-600 bg-indigo-200">
-                    {learnedTodayCount} / {DAILY_GOAL}
-                  </span>
-                </div>
-                <div className="overflow-hidden h-2 text-xs flex rounded bg-indigo-100">
-                  <div
-                    style={{
-                      width: `${Math.min(
-                        100,
-                        (learnedTodayCount / DAILY_GOAL) * 100
-                      )}%`,
-                    }}
-                    className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-indigo-500 transition-all duration-500"
-                  ></div>
-                </div>
-              </div>
-            </div>
-
-            {/* Progression Globale */}
-            <div className="pt-4 border-t border-slate-100 text-left">
-              <div className="flex mb-2 items-center justify-between">
-                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                  Progression globale
-                </span>
-                <span className="text-xs font-bold text-green-600">
-                  {learnedCount} / {totalWordsCount} mots ({globalProgressPercent}%)
-                </span>
-              </div>
-              <div className="overflow-hidden h-2 text-xs flex rounded bg-slate-100">
-                <div
-                  style={{ width: `${globalProgressPercent}%` }}
-                  className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-green-500 transition-all duration-500"
-                ></div>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            {/* À REVOIR */}
-            <div className="p-5 bg-orange-50 rounded-2xl border border-orange-100 flex flex-col items-center">
-              <span className="text-3xl font-bold text-orange-600 mb-1">
-                {dueCount}
-              </span>
-              <span className="text-[10px] text-orange-800 font-bold uppercase tracking-widest">
-                À Revoir
-              </span>
-            </div>
-
-            {/* NOUVEAUX */}
-            <div className="p-5 bg-blue-50 rounded-2xl border border-blue-100 flex flex-col items-center">
-              <span className="text-3xl font-bold text-blue-600 mb-1">
-                {newCardsToLearn}
-              </span>
-              <span className="text-[10px] text-blue-800 font-bold uppercase tracking-widest">
-                Nouveaux
-              </span>
-            </div>
-          </div>
-
-          {/* ACTIONS */}
-          <div className="space-y-3">
-            {/* BOUTON STANDARD */}
-            {canStartStandard ? (
-              <Link
-                href={`/${lang}/learn`}
-                className="block w-full py-4 bg-indigo-600 text-white font-bold text-lg rounded-2xl shadow-lg shadow-indigo-200 hover:bg-indigo-700 hover:-translate-y-1 transition-all"
-              >
-                Lancer la session ({standardSessionCount})
-              </Link>
-            ) : (
-              <div className="py-4 bg-slate-100 text-slate-400 font-bold text-lg rounded-2xl border border-slate-200 flex items-center justify-center gap-2">
-                <span>
-                  {isAllFinished ? "Tout est fini ! 🏆" : "Objectif atteint ✅"}
-                </span>
-              </div>
-            )}
-
-            {/* BOUTON BONUS */}
-            {canStartBonus && (
-              <div className="animate-fade-in">
-                <p className="text-xs text-slate-400 mb-2">
-                  Envie d'avancer plus vite ?
-                </p>
-                <Link
-                  href={`/${lang}/learn?mode=bonus`}
-                  className="block w-full py-3 bg-white border-2 border-indigo-600 text-indigo-600 font-bold rounded-2xl hover:bg-indigo-50 transition-colors"
-                >
-                  + 10 Mots Bonus 🚀
-                </Link>
-              </div>
-            )}
-
-            {/* BOUTON RÉVISION LIBRE */}
-            {canStartFreeReview && (
-              <div className="pt-2 border-t border-slate-100 mt-4">
-                <p className="text-xs text-slate-400 mb-2 mt-2">
-                  Réviser sans pression
-                </p>
-                <Link
-                  href={`/${lang}/learn?mode=review-all`}
-                  className="block w-full py-3 bg-purple-50 text-purple-700 border border-purple-100 font-bold rounded-2xl hover:bg-purple-100 transition-colors"
-                >
-                  ⚡️ Révision Aléatoire (20 mots)
-                </Link>
-              </div>
-            )}
           </div>
         </div>
 
-        {/* Footer Navigation */}
+        {/* Header content with Flag */}
+        <header className="bg-white/70 backdrop-blur-md rounded-3xl p-5 border border-slate-200/50 shadow-sm flex items-center gap-4">
+          <span className={`text-4xl shadow-sm rounded-2xl p-2 border flex items-center justify-center select-none ${theme.flagGlow}`}>
+            {flag}
+          </span>
+          <div>
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
+              {langName} <span className="text-xs font-bold text-slate-400">Médical</span>
+            </h1>
+            <p className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wider mt-0.5">
+              Espace d'apprentissage & FSRS
+            </p>
+          </div>
+        </header>
+
+        {/* Main Stats Block: Progress & Objectives */}
+        <div className="bg-white/80 backdrop-blur-md rounded-3xl p-6 shadow-sm border border-slate-200/50 space-y-6">
+          {/* Global Progress */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs font-bold text-slate-400 uppercase tracking-wider">
+              <span>Progression Globale</span>
+              <span className={`font-extrabold px-2.5 py-1 rounded-lg border ${theme.accentText} bg-slate-50 border-slate-200/30`}>
+                {learnedCount} / {totalWordsCount} mots ({globalProgressPercent}%)
+              </span>
+            </div>
+            <div className="overflow-hidden h-2.5 flex rounded-full bg-slate-100 border border-slate-200/30">
+              <div
+                style={{ width: `${globalProgressPercent}%` }}
+                className={`shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-gradient-to-r rounded-full transition-all duration-500 ${theme.barBg}`}
+              />
+            </div>
+          </div>
+
+          {/* Daily Goal */}
+          <div className="space-y-2 border-t border-slate-100 pt-5">
+            <div className="flex items-center justify-between text-xs font-bold text-slate-400 uppercase tracking-wider">
+              <span>Objectif quotidien</span>
+              <span className="font-extrabold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-100">
+                {learnedTodayCount} / {DAILY_GOAL} appris
+              </span>
+            </div>
+            <div className="overflow-hidden h-2.5 flex rounded-full bg-slate-100 border border-slate-200/30">
+              <div
+                style={{
+                  width: `${Math.min(100, (learnedTodayCount / DAILY_GOAL) * 100)}%`,
+                }}
+                className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-gradient-to-r from-indigo-500 to-violet-500 rounded-full transition-all duration-500"
+              />
+            </div>
+          </div>
+
+          {/* Status grid */}
+          <div className="grid grid-cols-2 gap-4 pt-2">
+            {/* Reviews Count card */}
+            <div className="p-4 bg-amber-50/40 rounded-2xl border border-amber-100/70 flex flex-col items-center justify-center relative overflow-hidden group hover:bg-amber-50/70 transition-all duration-200">
+              <div className="absolute top-2.5 right-2.5 text-amber-500 opacity-60">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-5 h-5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <span className="text-3xl font-black text-amber-600 mb-0.5 tracking-tight">
+                {dueCount}
+              </span>
+              <span className="text-[10px] text-amber-700 font-bold uppercase tracking-wider">
+                À Réviser
+              </span>
+            </div>
+
+            {/* New words Count card */}
+            <div className="p-4 bg-blue-50/40 rounded-2xl border border-blue-100/70 flex flex-col items-center justify-center relative overflow-hidden group hover:bg-blue-50/70 transition-all duration-200">
+              <div className="absolute top-2.5 right-2.5 text-blue-500 opacity-60">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-5 h-5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                </svg>
+              </div>
+              <span className="text-3xl font-black text-blue-600 mb-0.5 tracking-tight">
+                {newCardsToLearn}
+              </span>
+              <span className="text-[10px] text-blue-700 font-bold uppercase tracking-wider">
+                Nouveaux mots
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Action section */}
+        <div className="space-y-3">
+          {canStartStandard ? (
+            <Link
+              href={`/${lang}/learn`}
+              className={`block w-full py-4 bg-gradient-to-r text-white font-extrabold text-lg rounded-2xl shadow-lg text-center active:scale-[0.99] transition-all duration-150 relative overflow-hidden ${theme.accentBg}`}
+            >
+              Lancer la session ({standardSessionCount} mots)
+            </Link>
+          ) : (
+            <div className="py-4 bg-slate-100 text-slate-500 font-bold text-base rounded-2xl border border-slate-200/80 flex items-center justify-center gap-2 shadow-inner">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 text-emerald-500">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.8-11.2a1 1 0 00-1.4-1.4L9 8.6 7.6 7.2a1 1 0 00-1.4 1.4l2.1 2.1a1 1 0 001.4 0l4.1-4.1z" clipRule="evenodd" />
+              </svg>
+              <span>{isAllFinished ? "Tout est complété ! Félicitations ! 🏆" : "Objectif quotidien atteint ! À demain ! ✅"}</span>
+            </div>
+          )}
+
+          {/* Bonus actions */}
+          {canStartBonus && (
+            <div className="pt-2 text-center animate-fade-in space-y-2">
+              <p className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">
+                Envie d'avancer plus vite ?
+              </p>
+              <Link
+                href={`/${lang}/learn?mode=bonus`}
+                className={`block w-full py-3 bg-white border-2 font-bold rounded-2xl text-center active:scale-[0.99] transition-all duration-100 shadow-sm flex items-center justify-center gap-1.5 ${theme.btnBorder}`}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-4 h-4">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 21l8.982-11.795m-8.982 11.795l5.228-5.228m-5.228 5.228l-5.228-5.228M17.982 9.205L18 3l-8.982 11.795m8.982-11.795L13.77 8.43m4.212-5.225l-5.228 5.228" />
+                </svg>
+                Apprendre + 10 mots bonus
+              </Link>
+            </div>
+          )}
+
+          {/* Free Random review */}
+          {canStartFreeReview && (
+            <div className="pt-3 border-t border-slate-200/50 mt-4">
+              <Link
+                href={`/${lang}/learn?mode=review-all`}
+                className="block w-full py-3 bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-100/80 font-bold rounded-2xl text-center active:scale-[0.99] transition-all duration-100 text-sm flex items-center justify-center gap-1.5"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-4 h-4 text-purple-600">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7 48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3l-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7 48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3l-3 3" />
+                </svg>
+                Révision libre aléatoire (20 mots)
+              </Link>
+            </div>
+          )}
+        </div>
+
+        {/* Lower Navigation links */}
         <div className="grid grid-cols-2 gap-4">
           <Link
             href={`/${lang}/deck`}
-            className="group block p-4 bg-white rounded-2xl border border-slate-200 text-center hover:border-indigo-300 transition-colors"
+            className="group block p-5 bg-white rounded-3xl border border-slate-200/50 text-center hover:border-indigo-400 hover:shadow-md transition-all duration-200"
           >
-            <span className="text-2xl block mb-2 group-hover:scale-110 transition-transform">
-              📚
-            </span>
-            <span className="text-sm font-bold text-slate-600">
+            <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-3 transition-transform duration-300 group-hover:scale-110">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.2" stroke="currentColor" className="w-5 h-5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
+              </svg>
+            </div>
+            <span className="text-sm font-extrabold text-slate-700 group-hover:text-indigo-600 transition-colors">
               Dictionnaire
             </span>
           </Link>
           <Link
             href="/profile"
-            className="group block p-4 bg-white rounded-2xl border border-slate-200 text-center hover:border-indigo-300 transition-colors"
+            className="group block p-5 bg-white rounded-3xl border border-slate-200/50 text-center hover:border-indigo-400 hover:shadow-md transition-all duration-200"
           >
-            <span className="text-2xl block mb-2 group-hover:scale-110 transition-transform">
-              👤
+            <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-3 transition-transform duration-300 group-hover:scale-110">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.2" stroke="currentColor" className="w-5 h-5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+              </svg>
+            </div>
+            <span className="text-sm font-extrabold text-slate-700 group-hover:text-indigo-600 transition-colors">
+              Mon Profil
             </span>
-            <span className="text-sm font-bold text-slate-600">Mon Profil</span>
           </Link>
         </div>
       </div>
