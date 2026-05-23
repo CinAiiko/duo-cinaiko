@@ -13,6 +13,7 @@ export async function selectLanguage(langCode: string) {
     path: "/",
     maxAge: 60 * 60 * 24 * 365, // 1 an
     sameSite: "lax",
+
   });
 
   redirect(`/${langCode}`);
