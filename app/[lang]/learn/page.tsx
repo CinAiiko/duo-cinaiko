@@ -35,12 +35,33 @@ export default function LearnPage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const nextButtonRef = useRef<HTMLButtonElement>(null);
 
+  const sessionKey = `duo-session-${lang}-${mode}`;
+
   useEffect(() => {
     const loadData = async () => {
-      // @ts-ignore
-      const data = await getSession(lang as string, mode);
       const weights = await getFsrsSettings(lang as string);
       setCustomWeights(weights);
+
+      // Essayer de restaurer une session locale existante
+      const saved = localStorage.getItem(sessionKey);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed.currentCard !== undefined && Array.isArray(parsed.queue)) {
+            setQueue(parsed.queue);
+            setCurrentCard(parsed.currentCard);
+            setStats(parsed.stats || { initial: 0, completed: 0 });
+            setRecentCardIds(parsed.recentCardIds || []);
+            setIsLoading(false);
+            return;
+          }
+        } catch (e) {
+          console.error("Erreur lors de la restauration de la session locale :", e);
+        }
+      }
+
+      // @ts-ignore
+      const data = await getSession(lang as string, mode);
 
       if (data && data.length > 0) {
         // Initialiser toutes les cartes comme "non vues" (unseen)
@@ -61,7 +82,7 @@ export default function LearnPage() {
       setIsLoading(false);
     };
     loadData();
-  }, [lang, mode]);
+  }, [lang, mode, sessionKey]);
 
   // Gérer le focus automatique
   useEffect(() => {
@@ -69,6 +90,23 @@ export default function LearnPage() {
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   }, [status, isLoading, currentCard]);
+
+  // Sauvegarder la session locale à chaque changement d'état
+  useEffect(() => {
+    if (isLoading) return;
+
+    if (!currentCard && queue.length === 0) {
+      localStorage.removeItem(sessionKey);
+    } else {
+      const stateToSave = {
+        queue,
+        currentCard,
+        stats,
+        recentCardIds,
+      };
+      localStorage.setItem(sessionKey, JSON.stringify(stateToSave));
+    }
+  }, [queue, currentCard, stats, recentCardIds, isLoading, sessionKey]);
 
   // --- LOGIQUE D'ATTRIBUTION DES CARTES (QUEUE) ---
   const getNextState = (currentQueue: any[], historyIds: string[] = []) => {
@@ -157,29 +195,41 @@ export default function LearnPage() {
           ...currentCard,
           status: "learning",
           learningStep: 0,
-          dueTime: Date.now() + 60 * 1000, // revoir dans 1 minute
+          dueTime: Date.now() + 10 * 60 * 1000, // revoir dans 10 minutes
         });
       } else {
         isGraduated = true;
       }
     } else {
       // Mode standard / FSRS
+      // On calcule la mise à jour FSRS locale pour que la carte dans la queue React
+      // ait les mêmes valeurs que celles qui vont être enregistrées en BDD
+      const fsrs = calculateFSRS(rating, currentCard, customWeights);
+      const updatedCard = {
+        ...currentCard,
+        stability: fsrs.stability,
+        difficulty: fsrs.difficulty,
+        state: fsrs.state,
+        interval: fsrs.interval,
+        last_reviewed_at: new Date().toISOString(),
+      };
+
       if (rating === 1) {
-        // À revoir (Again) -> step 0 (1m)
+        // À revoir (Again) -> step 0 (10m)
         updatedQueue.push({
-          ...currentCard,
+          ...updatedCard,
           status: "learning",
           learningStep: 0,
-          dueTime: Date.now() + 60 * 1000,
+          dueTime: Date.now() + 10 * 60 * 1000,
         });
       } else if (rating === 2) {
         // Difficile (Hard)
         if (isLearning) {
           updatedQueue.push({
-            ...currentCard,
+            ...updatedCard,
             status: "learning",
             learningStep: 1,
-            dueTime: Date.now() + 6 * 60 * 1000,
+            dueTime: Date.now() + 15 * 60 * 1000,
           });
         } else {
           isGraduated = true;
@@ -187,15 +237,15 @@ export default function LearnPage() {
       } else if (rating === 3) {
         // Bien (Good)
         if (isLearning && (currentCard.learningStep || 0) === 0) {
-          // Si premier passage ou étape 1m, on l'envoie à l'étape 10m
+          // Si premier passage ou étape 10m, on l'envoie à l'étape 20m
           updatedQueue.push({
-            ...currentCard,
+            ...updatedCard,
             status: "learning",
             learningStep: 1,
-            dueTime: Date.now() + 10 * 60 * 1000,
+            dueTime: Date.now() + 20 * 60 * 1000,
           });
         } else {
-          // Déjà validé l'étape 10m ou carte de révision -> Acquis !
+          // Déjà validé l'étape 20m ou carte de révision -> Acquis !
           isGraduated = true;
         }
       } else if (rating === 4) {
@@ -204,15 +254,25 @@ export default function LearnPage() {
       }
 
       // Enregistrer le résultat SRS en base de données de manière asynchrone (non bloquante)
-      saveResult(currentCard.word_id, currentCard.id, rating, lang as string)
-        .then((result) => {
-          if (result && !result.success) {
-            console.error("Erreur sauvegarde FSRS :", result.error);
-          }
-        })
-        .catch((err) => {
-          console.error("Erreur de connexion Supabase :", err);
-        });
+      // Seulement si la carte n'est pas dans un état intermédiaire d'apprentissage.
+      // Cela évite de spammer la BDD et de gonfler artificiellement la stabilité FSRS.
+      const shouldSaveToDB =
+        !isLearning ||
+        rating === 4 ||
+        (rating === 3 && (currentCard.learningStep || 0) === 1) ||
+        (rating === 1 && currentCard.status === "unseen");
+
+      if (shouldSaveToDB) {
+        saveResult(currentCard.word_id, currentCard.id, rating, lang as string)
+          .then((result) => {
+            if (result && !result.success) {
+              console.error("Erreur sauvegarde FSRS :", result.error);
+            }
+          })
+          .catch((err) => {
+            console.error("Erreur de connexion Supabase :", err);
+          });
+      }
     }
 
     if (isGraduated) {
@@ -259,7 +319,7 @@ export default function LearnPage() {
       setFeedbackMsg("C'est un synonyme correct dans ce contexte, trouve le mot exact !");
     } else {
       setStatus("error");
-      setFeedbackMsg("Aïe. On la revoit dans ~1 minute.");
+      setFeedbackMsg("Aïe. On la revoit dans ~10 minutes.");
       if (isAutoTTS) speak(currentCard.content_raw, lang as string);
     }
   };
@@ -269,7 +329,7 @@ export default function LearnPage() {
     if (status !== "idle" && status !== "synonym") return;
     setInput("");
     setStatus("error");
-    setFeedbackMsg("Aïe. On la revoit dans ~1 minute.");
+    setFeedbackMsg("Aïe. On la revoit dans ~10 minutes.");
     const isAutoTTS =
       document.cookie
         .split("; ")
@@ -303,7 +363,7 @@ export default function LearnPage() {
           return;
         }
 
-        if (!isFreeMode) {
+        if (!isFreeMode && status === "success") {
           if (e.key === "1") {
             e.preventDefault();
             handleGrade(1);
@@ -318,7 +378,7 @@ export default function LearnPage() {
             handleGrade(4);
           } else if (e.key === " " || e.key === "Enter") {
             e.preventDefault();
-            handleGrade(status === "success" ? 3 : 1); // Raccourci par défaut : Bien si correct, Revoir si faux
+            handleGrade(3); // Raccourci par défaut : Bien si correct
           }
         } else {
           if (e.key === " " || e.key === "Enter") {
@@ -344,22 +404,22 @@ export default function LearnPage() {
     const isLearning = currentCard.status === "learning" || (isNew && currentCard.status === "unseen");
     
     if (isLearning) {
-      if (rating === 1) return "< 1 min";
-      if (rating === 2) return "< 6 min";
+      if (rating === 1) return "< 10 min";
+      if (rating === 2) return "< 15 min";
       if (rating === 3) {
         // Si c'est l'étape de confirmation (step 1), Good le valide définitivement (FSRS)
         if ((currentCard.learningStep || 0) === 1) {
           const fsrs = calculateFSRS(3, currentCard, customWeights);
           return `${fsrs.interval} j`;
         }
-        return "< 10 min";
+        return "< 20 min";
       }
       // Easy graduates directly to FSRS
       const fsrs = calculateFSRS(4, currentCard, customWeights);
       return `${fsrs.interval} j`;
     } else {
       // Révisions
-      if (rating === 1) return "< 1 min";
+      if (rating === 1) return "< 10 min";
       const fsrs = calculateFSRS(rating, currentCard, customWeights);
       return `${fsrs.interval} j`;
     }
@@ -391,6 +451,7 @@ export default function LearnPage() {
           </p>
           <Link
             href={`/${lang}`}
+            onClick={() => localStorage.removeItem(sessionKey)}
             className="block w-full bg-indigo-600 text-white font-bold px-6 py-3 rounded-xl hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-600/20 active:scale-95 duration-100"
           >
             Retour au Dashboard
@@ -732,7 +793,7 @@ export default function LearnPage() {
           ) : (
             /* SI RÉPONDU : ON AFFICHE LE CONTINUER OU LES 4 BOUTONS FSRS */
             <div className="w-full">
-              {(status === "success" || status === "error") && !isFreeMode ? (
+              {status === "success" && !isFreeMode ? (
                 <div className="flex flex-col gap-3">
                   <div className="text-center text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">
                     Évalue ta facilité de rappel :
@@ -793,6 +854,7 @@ export default function LearnPage() {
       <div className="mt-6 shrink-0">
         <Link
           href={`/${lang}`}
+          onClick={() => localStorage.removeItem(sessionKey)}
           className="text-slate-400 hover:text-slate-600 text-xs font-bold uppercase tracking-widest transition-colors duration-100"
         >
           Quitter
