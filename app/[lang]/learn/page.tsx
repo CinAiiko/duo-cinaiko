@@ -31,6 +31,18 @@ export default function LearnPage() {
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<"idle" | "success" | "error" | "synonym">("idle");
   const [feedbackMsg, setFeedbackMsg] = useState("");
+  const [canGrade, setCanGrade] = useState(false);
+
+  useEffect(() => {
+    if (status === "success" || status === "error") {
+      const timer = setTimeout(() => {
+        setCanGrade(true);
+      }, 400);
+      return () => clearTimeout(timer);
+    } else {
+      setCanGrade(false);
+    }
+  }, [status]);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const nextButtonRef = useRef<HTMLButtonElement>(null);
@@ -64,13 +76,16 @@ export default function LearnPage() {
       const data = await getSession(lang as string, mode);
 
       if (data && data.length > 0) {
-        // Initialiser toutes les cartes comme "non vues" (unseen)
-        const activeQueue = data.map((c: any) => ({
-          ...c,
-          status: "unseen",
-          learningStep: 0,
-          dueTime: 0,
-        }));
+        // Initialiser toutes les cartes : si interval === 0 et déjà révisée, elle est en cours d'apprentissage/échec
+        const activeQueue = data.map((c: any) => {
+          const isFailed = c.interval === 0 && c.last_reviewed_at !== null;
+          return {
+            ...c,
+            status: isFailed ? "learning" : "unseen",
+            learningStep: 0,
+            dueTime: 0,
+          };
+        });
         setStats({ initial: data.length, completed: 0 });
 
         // Sortir la toute première carte de la file d'attente
@@ -90,6 +105,8 @@ export default function LearnPage() {
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   }, [status, isLoading, currentCard]);
+
+
 
   // Sauvegarder la session locale à chaque changement d'état
   useEffect(() => {
@@ -186,25 +203,28 @@ export default function LearnPage() {
 
     const isNew = currentCard.type === "new";
     const isLearning = currentCard.status === "learning" || (isNew && currentCard.status === "unseen");
+    const isFirstTime = isNew && (currentCard.status === "unseen" || (currentCard.learningStep ?? 0) === 0);
     let updatedQueue = [...queue];
     let isGraduated = false;
 
+
     if (isFreeMode) {
       if (status === "error") {
+        const delayMs = getDynamicErrorDelayMs(1, queue);
         updatedQueue.push({
           ...currentCard,
           status: "learning",
           learningStep: 0,
-          dueTime: Date.now() + 10 * 60 * 1000, // revoir dans 10 minutes
+          dueTime: Date.now() + delayMs,
         });
       } else {
         isGraduated = true;
       }
     } else {
       // Mode standard / FSRS
-      // On calcule la mise à jour FSRS locale pour que la carte dans la queue React
-      // ait les mêmes valeurs que celles qui vont être enregistrées en BDD
-      const fsrs = calculateFSRS(rating, currentCard, customWeights);
+      const dbRating = status === "error" ? (rating === 4 ? 4 : 1) : rating;
+      
+      const fsrs = calculateFSRS(dbRating, currentCard, customWeights);
       const updatedCard = {
         ...currentCard,
         stability: fsrs.stability,
@@ -214,56 +234,67 @@ export default function LearnPage() {
         last_reviewed_at: new Date().toISOString(),
       };
 
-      if (rating === 1) {
-        // À revoir (Again) -> step 0 (10m)
-        updatedQueue.push({
-          ...updatedCard,
-          status: "learning",
-          learningStep: 0,
-          dueTime: Date.now() + 10 * 60 * 1000,
-        });
-      } else if (rating === 2) {
-        // Difficile (Hard)
-        if (isLearning) {
+      if (status === "error") {
+        if (rating === 4) {
+          isGraduated = true;
+        } else {
+          const delayMs = getDynamicErrorDelayMs(rating, queue);
           updatedQueue.push({
             ...updatedCard,
             status: "learning",
-            learningStep: 1,
-            dueTime: Date.now() + 15 * 60 * 1000,
+            learningStep: 0,
+            dueTime: Date.now() + delayMs,
           });
-        } else {
-          isGraduated = true;
         }
-      } else if (rating === 3) {
-        // Bien (Good)
-        if (isLearning && (currentCard.learningStep || 0) === 0) {
-          // Si premier passage ou étape 10m, on l'envoie à l'étape 20m
+      } else {
+        // status === "success"
+        if (rating === 1) {
+          const delayMs = getDynamicErrorDelayMs(1, queue);
           updatedQueue.push({
             ...updatedCard,
             status: "learning",
-            learningStep: 1,
-            dueTime: Date.now() + 20 * 60 * 1000,
+            learningStep: 0,
+            dueTime: Date.now() + delayMs,
           });
-        } else {
-          // Déjà validé l'étape 20m ou carte de révision -> Acquis !
+        } else if (rating === 2) {
+          if (isFirstTime) {
+            // Première fois et Difficile : revoir dans 6 mins (fixe)
+            const delayMs = 6 * 60 * 1000;
+            updatedQueue.push({
+              ...updatedCard,
+              status: "learning",
+              learningStep: 1,
+              dueTime: Date.now() + delayMs,
+            });
+          } else {
+            isGraduated = true;
+          }
+        } else if (rating === 3) {
+          if (isFirstTime) {
+            // Première fois et juste : revoir dans 10 mins (fixe)
+            const delayMs = 10 * 60 * 1000;
+            updatedQueue.push({
+              ...updatedCard,
+              status: "learning",
+              learningStep: 1,
+              dueTime: Date.now() + delayMs,
+            });
+          } else {
+            isGraduated = true;
+          }
+        } else if (rating === 4) {
           isGraduated = true;
         }
-      } else if (rating === 4) {
-        // Facile (Easy) -> Acquis immédiatement !
-        isGraduated = true;
       }
 
       // Enregistrer le résultat SRS en base de données de manière asynchrone (non bloquante)
-      // Seulement si la carte n'est pas dans un état intermédiaire d'apprentissage.
-      // Cela évite de spammer la BDD et de gonfler artificiellement la stabilité FSRS.
       const shouldSaveToDB =
+        isGraduated ||
         !isLearning ||
-        rating === 4 ||
-        (rating === 3 && (currentCard.learningStep || 0) === 1) ||
-        (rating === 1 && currentCard.status === "unseen");
+        (dbRating === 1 && currentCard.status === "unseen");
 
       if (shouldSaveToDB) {
-        saveResult(currentCard.word_id, currentCard.id, rating, lang as string)
+        saveResult(currentCard.word_id, currentCard.id, dbRating, lang as string)
           .then((result) => {
             if (result && !result.success) {
               console.error("Erreur sauvegarde FSRS :", result.error);
@@ -350,7 +381,7 @@ export default function LearnPage() {
         return;
       }
 
-      if (status === "success" || status === "error") {
+      if ((status === "success" || status === "error") && canGrade) {
         const key = e.key.toLowerCase();
         if (key === "m") {
           e.preventDefault();
@@ -391,38 +422,87 @@ export default function LearnPage() {
 
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
-  }, [status, input, currentCard, queue]);
+  }, [status, input, currentCard, queue, canGrade]);
 
   const preventBlur = (e: React.MouseEvent) => {
     e.preventDefault();
   };
 
+  // --- CALCUL DU DÉLAI DYNAMIQUE POUR LES ERREURS ---
+  const getDynamicErrorDelayMs = (rating: number, currentQueue: any[]) => {
+    if (rating === 4) return 0;
+
+    const otherCardsCount = currentQueue.length;
+    const estimatedRemainingMs = otherCardsCount * 25 * 1000;
+
+    let baseDelayMs = 0;
+    if (rating === 1) baseDelayMs = 1 * 60 * 1000; // 1 min
+    else if (rating === 2) baseDelayMs = 6 * 60 * 1000; // 6 min
+    else if (rating === 3) baseDelayMs = 10 * 60 * 1000; // 10 min
+
+    if (estimatedRemainingMs < baseDelayMs && otherCardsCount > 0) {
+      let targetIndex = 1;
+      if (rating === 1) {
+        targetIndex = Math.max(1, Math.floor(otherCardsCount * 0.25));
+      } else if (rating === 2) {
+        targetIndex = Math.max(1, Math.floor(otherCardsCount * 0.5));
+      } else if (rating === 3) {
+        targetIndex = Math.max(1, Math.floor(otherCardsCount * 0.75));
+      }
+      return targetIndex * 25 * 1000;
+    }
+
+    return baseDelayMs;
+  };
+
   // --- TEXTES DES BOUTONS DE GRADING (FSRS) ---
   const getButtonIntervalText = (rating: number) => {
     if (!currentCard) return "";
+
     const isNew = currentCard.type === "new";
-    const isLearning = currentCard.status === "learning" || (isNew && currentCard.status === "unseen");
-    
-    if (isLearning) {
-      if (rating === 1) return "< 10 min";
-      if (rating === 2) return "< 15 min";
-      if (rating === 3) {
-        // Si c'est l'étape de confirmation (step 1), Good le valide définitivement (FSRS)
-        if ((currentCard.learningStep || 0) === 1) {
-          const fsrs = calculateFSRS(3, currentCard, customWeights);
-          return `${fsrs.interval} j`;
-        }
-        return "< 20 min";
+    const isFirstTime = isNew && (currentCard.status === "unseen" || (currentCard.learningStep ?? 0) === 0);
+
+    // 1. Si on a eu FAUX (statut error)
+    if (status === "error") {
+      if (rating === 4) {
+        // Facile (FSRS)
+        const fsrs = calculateFSRS(4, currentCard, customWeights);
+        return `${fsrs.interval} j`;
       }
-      // Easy graduates directly to FSRS
-      const fsrs = calculateFSRS(4, currentCard, customWeights);
-      return `${fsrs.interval} j`;
-    } else {
-      // Révisions
-      if (rating === 1) return "< 10 min";
-      const fsrs = calculateFSRS(rating, currentCard, customWeights);
-      return `${fsrs.interval} j`;
+      // Raccourcis courts dynamiques (1m, 6m, 10m)
+      const delayMs = getDynamicErrorDelayMs(rating, queue);
+      if (delayMs < 60 * 1000) {
+        return "< 1 min";
+      }
+      return `< ${Math.round(delayMs / (60 * 1000))} min`;
     }
+
+    // 2. Si on a eu JUSTE (statut success) ou mode normal
+    if (rating === 1) {
+      const delayMs = getDynamicErrorDelayMs(1, queue);
+      if (delayMs < 60 * 1000) {
+        return "< 1 min";
+      }
+      return `< ${Math.round(delayMs / (60 * 1000))} min`;
+    }
+
+    // Si première fois qu'on voit le mot et juste
+    if (isFirstTime) {
+      if (rating === 2) {
+        return "< 6 min";
+      }
+      if (rating === 3) {
+        return "< 10 min";
+      }
+      if (rating === 4) {
+        const fsrs = calculateFSRS(4, currentCard, customWeights);
+        return `${fsrs.interval} j`;
+      }
+    }
+
+    // Reste (Confirmation step 1, cartes de révision, etc.) -> FSRS
+    const fsrs = calculateFSRS(rating, currentCard, customWeights);
+    return `${fsrs.interval} j`;
   };
 
   if (isLoading) {

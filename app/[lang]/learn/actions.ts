@@ -124,7 +124,10 @@ export async function getSession(
       const selectedWords = langWords!.filter(w => reviewWordIds.includes(w.id));
       
       reviewsDue = pickRandomSentencePerWord(selectedWords, sentences, reviews);
-      reviewsDue = reviewsDue.map(c => ({ ...c, type: "review" }));
+      reviewsDue = reviewsDue.map(c => ({
+        ...c,
+        type: c.interval === 0 ? "new" : "review",
+      }));
       reviewsDue = shuffleArray(reviewsDue);
     }
   }
@@ -146,13 +149,13 @@ export async function getSession(
       .eq("user_id", user.id)
       .in("word_id", langWordIds);
 
-    const learnedToday = todaysReviews?.filter((r) => {
-      const d = r.created_at || r.last_reviewed_at;
+    const introducedToday = todaysReviews?.filter((r) => {
+      const d = r.created_at;
       return d && new Date(d) >= currentVirtualDayStart;
     }).length || 0;
 
     const DAILY_GOAL = 10;
-    newCardsLimit = Math.max(0, DAILY_GOAL - learnedToday);
+    newCardsLimit = Math.max(0, DAILY_GOAL - introducedToday);
   }
 
   // D. Récupération Nouvelles Cartes
@@ -236,11 +239,18 @@ export async function saveResult(
   const fsrs = calculateFSRS(rating, existingReview, customWeights);
 
   const nextDate = new Date();
-  nextDate.setDate(nextDate.getDate() + fsrs.interval);
+  if (rating === 1) {
+    // Si la carte est ratée (Again), on ne la repousse pas au lendemain en base.
+    // On la laisse "due" immédiatement (next_review_date = maintenant, intervalle = 0)
+    // afin que si l'utilisateur quitte la session, le mot reste à faire aujourd'hui.
+    nextDate.setTime(Date.now());
+  } else {
+    nextDate.setDate(nextDate.getDate() + fsrs.interval);
+  }
 
   const payload = {
     next_review_date: nextDate.toISOString(),
-    interval: fsrs.interval,
+    interval: rating === 1 ? 0 : fsrs.interval,
     stability: fsrs.stability,
     difficulty: fsrs.difficulty,
     state: fsrs.state,
