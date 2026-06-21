@@ -363,7 +363,7 @@ export default function LearnPage() {
           return;
         }
 
-        if (!isFreeMode && status === "success") {
+        if (!isFreeMode) {
           if (e.key === "1") {
             e.preventDefault();
             handleGrade(1);
@@ -378,7 +378,7 @@ export default function LearnPage() {
             handleGrade(4);
           } else if (e.key === " " || e.key === "Enter") {
             e.preventDefault();
-            handleGrade(3); // Raccourci par défaut : Bien si correct
+            handleGrade(status === "success" ? 3 : 1); // Raccourci par défaut : Bien si correct, Revoir si faux
           }
         } else {
           if (e.key === " " || e.key === "Enter") {
@@ -793,7 +793,7 @@ export default function LearnPage() {
           ) : (
             /* SI RÉPONDU : ON AFFICHE LE CONTINUER OU LES 4 BOUTONS FSRS */
             <div className="w-full">
-              {status === "success" && !isFreeMode ? (
+              {(status === "success" || status === "error") && !isFreeMode ? (
                 <div className="flex flex-col gap-3">
                   <div className="text-center text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">
                     Évalue ta facilité de rappel :
